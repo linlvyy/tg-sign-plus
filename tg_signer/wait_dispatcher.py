@@ -119,6 +119,7 @@ async def wait_for_action(
             context=context,
             log=log,
             clean_text_for_match=clean_text_for_match,
+            timeout=timeout,
         )
         if not ok:
             raise BusinessRetryableError(
