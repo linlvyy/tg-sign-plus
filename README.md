@@ -362,6 +362,31 @@ tg-signer list my_account
 | `OPENAI_MODEL` | 使用的模型 | `gpt-4o-mini` |
 | `SERVER_CHAN_SEND_KEY` | Server酱推送密钥 | - |
 
+#### 性能与资源控制
+
+| 变量名 | 说明 | 默认值 |
+|--------|------|--------|
+| `SIGN_TASK_CHAT_CACHE_MAX_DIALOGS` | 刷新账号聊天缓存时最多从 Telegram 拉取的会话数量，账号加入大量群组时可降低内存峰值 | `200` |
+| `SIGN_TASK_CHAT_CACHE_RESPONSE_MAX_ITEMS` | `/chats/{account}` 接口最多返回的聊天条数，`count` 仍为真实总数 | `200` |
+| `SIGN_TASK_CHAT_SEARCH_MAX_LIMIT` | 聊天搜索接口单次最大返回条数 | `200` |
+| `SIGN_TASK_HISTORY_MAX_ENTRIES` | 每个任务保留的最大历史记录数 | `100` |
+| `SIGN_TASK_HISTORY_MAX_FLOW_LINES` | 每次任务历史最多保存的日志行数 | `200` |
+| `SIGN_TASK_HISTORY_MAX_LINE_CHARS` | 每行历史日志最多保存的字符数 | `500` |
+| `SIGN_TASK_RETURN_FULL_OUTPUT` | 任务运行接口是否返回完整日志输出；设为 `1`/`true`/`yes`/`on` 开启 | `0` |
+| `SIGN_TASK_SCHEDULER_MAX_INSTANCES` | APScheduler 单个 Job 最大并发实例数，小内存容器建议保持较低 | `2` |
+| `SIGN_TASK_SCHEDULER_STATUS_FORCE_REFRESH` | 查询调度状态时是否强制刷新任务配置缓存；设为 `1`/`true`/`yes`/`on` 开启 | `0` |
+| `SIGN_TASK_ACCOUNT_COOLDOWN` | 同一账号连续任务之间的冷却秒数 | `5` |
+| `ACCOUNT_STATUS_CHECK_CONCURRENCY` | 批量账号状态检测的并发数 | `2` |
+| `TG_GLOBAL_CONCURRENCY` | Telegram 操作全局并发数，低内存环境建议设为 `1` | `1` |
+| `TG_SESSION_NO_UPDATES` / `TG_NO_UPDATES` | 默认禁用 Telegram updates；适合只发送消息、不依赖回复监听的场景 | `false` |
+| `APP_DB_SQLITE_TIMEOUT` | SQLite 连接等待锁释放的超时时间（秒） | `30` |
+| `APP_DB_POOL_SIZE` | PostgreSQL 连接池基础连接数 | `5` |
+| `APP_DB_MAX_OVERFLOW` | PostgreSQL 连接池最大溢出连接数 | `10` |
+| `APP_DB_POOL_TIMEOUT` | PostgreSQL 获取连接的超时时间（秒） | `30` |
+| `APP_DB_POOL_RECYCLE` | PostgreSQL 连接回收时间（秒） | `1800` |
+
+低内存容器（如 512MB）建议保持 `TG_GLOBAL_CONCURRENCY=1`、`SIGN_TASK_SCHEDULER_MAX_INSTANCES=1` 或 `2`，并按账号规模下调 `SIGN_TASK_CHAT_CACHE_MAX_DIALOGS`。
+
 ### 动作类型说明
 
 | 动作代码 | 说明 | 参数 |

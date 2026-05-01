@@ -994,54 +994,54 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 return False
             return True
 
-        while True:
-            if need_update_handlers and message_handler_ref is None:
-                self.log(f"adding message handlers for chats: {chat_ids}")
-                message_handler_ref = self.app.add_handler(
-                    MessageHandler(self.on_message, filters.chat(chat_ids))
+        try:
+            while True:
+                if need_update_handlers and message_handler_ref is None:
+                    self.log(f"adding message handlers for chats: {chat_ids}")
+                    message_handler_ref = self.app.add_handler(
+                        MessageHandler(self.on_message, filters.chat(chat_ids))
+                    )
+                    edited_handler_ref = self.app.add_handler(
+                        EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
+                    )
+                try:
+                    async with self.app:
+                        now = get_now()
+                        self.log(f"当前时间: {now}")
+                        now_date_str = str(now.date())
+                        self.context = self.ensure_ctx()
+                        if need_sign(now_date_str):
+                            if only_once and config.random_seconds > 0:
+                                delay = random.randint(0, int(config.random_seconds))
+                                if delay > 0:
+                                    self.log(f"单次执行随机延迟: {delay} 秒")
+                                    await asyncio.sleep(delay)
+                            await sign_once()
+
+                except (OSError, errors.Unauthorized) as e:
+                    logger.exception(e)
+                    await asyncio.sleep(30)
+                    continue
+
+                if only_once:
+                    break
+                cron_it = croniter(self._validate_sign_at(config.sign_at), now)
+                next_run: datetime = cron_it.next(datetime) + timedelta(
+                    seconds=random.randint(0, int(config.random_seconds))
                 )
-                edited_handler_ref = self.app.add_handler(
-                    EditedMessageHandler(self.on_edited_message, filters.chat(chat_ids))
-                )
-            try:
-                async with self.app:
-                    now = get_now()
-                    self.log(f"当前时间: {now}")
-                    now_date_str = str(now.date())
-                    self.context = self.ensure_ctx()
-                    if need_sign(now_date_str):
-                        if only_once and config.random_seconds > 0:
-                            delay = random.randint(0, int(config.random_seconds))
-                            if delay > 0:
-                                self.log(f"单次执行随机延迟: {delay} 秒")
-                                await asyncio.sleep(delay)
-                        await sign_once()
-
-            except (OSError, errors.Unauthorized) as e:
-                logger.exception(e)
-                await asyncio.sleep(30)
-                continue
-
-            if only_once:
-                break
-            cron_it = croniter(self._validate_sign_at(config.sign_at), now)
-            next_run: datetime = cron_it.next(datetime) + timedelta(
-                seconds=random.randint(0, int(config.random_seconds))
-            )
-            self.log(f"下次运行时间: {next_run}")
-            await asyncio.sleep((next_run - now).total_seconds())
-
-
-        if message_handler_ref:
-            try:
-                self.app.remove_handler(*message_handler_ref)
-            except Exception:
-                pass
-        if edited_handler_ref:
-            try:
-                self.app.remove_handler(*edited_handler_ref)
-            except Exception:
-                pass
+                self.log(f"下次运行时间: {next_run}")
+                await asyncio.sleep((next_run - now).total_seconds())
+        finally:
+            if message_handler_ref:
+                try:
+                    self.app.remove_handler(*message_handler_ref)
+                except Exception:
+                    pass
+            if edited_handler_ref:
+                try:
+                    self.app.remove_handler(*edited_handler_ref)
+                except Exception:
+                    pass
 
     async def run_once(self, num_of_dialogs):
         return await self.run(num_of_dialogs, only_once=True, force_rerun=True)
