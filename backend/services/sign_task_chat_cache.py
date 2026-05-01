@@ -12,7 +12,7 @@ from backend.core.config import get_settings
 from backend.core.database import get_session_local
 from backend.models.account_chat_cache import AccountChatCacheItem, AccountChatCacheMeta
 from backend.models.account_session import AccountSession
-from backend.utils.account_locks import get_account_lock
+from backend.utils.env import read_int_env
 from backend.utils.proxy import build_proxy_dict
 from backend.utils.tg_session import (
     get_account_proxy,
@@ -147,12 +147,20 @@ class SignTaskChatCacheService:
                 .filter(AccountChatCacheMeta.account_name == account_name)
                 .first()
             )
-            items = (
+            total = (
+                db.query(AccountChatCacheItem)
+                .filter(AccountChatCacheItem.account_name == account_name)
+                .count()
+            )
+            query = (
                 db.query(AccountChatCacheItem)
                 .filter(AccountChatCacheItem.account_name == account_name)
                 .order_by(AccountChatCacheItem.title.asc(), AccountChatCacheItem.chat_id.asc())
-                .all()
             )
+            max_items = read_int_env("SIGN_TASK_CHAT_CACHE_RESPONSE_MAX_ITEMS", 200, minimum=1)
+            if max_items > 0:
+                query = query.limit(max_items)
+            items = query.all()
             ttl = self._resolve_cache_ttl_minutes(db, account_name)
             last_cached_at = meta.last_cached_at if meta else None
             expired = self._is_cache_expired(meta, ttl)
@@ -162,7 +170,7 @@ class SignTaskChatCacheService:
                 "last_cached_at": last_cached_at.isoformat() + "Z" if last_cached_at else None,
                 "cache_ttl_minutes": ttl,
                 "expired": expired,
-                "count": len(items),
+                "count": total,
             }
         finally:
             db.close()
@@ -191,10 +199,8 @@ class SignTaskChatCacheService:
                 raise RuntimeError("账号当前正在执行任务，暂时无法刷新聊天列表，请稍后再试")
             return cache
 
-        items = await self.refresh_account_chats(account_name)
+        await self.refresh_account_chats(account_name)
         refreshed = self.get_account_chat_cache(account_name)
-        refreshed["items"] = items
-        refreshed["count"] = len(items)
         refreshed["expired"] = False
         return refreshed
 
@@ -208,8 +214,9 @@ class SignTaskChatCacheService:
     ) -> Dict[str, Any]:
         if limit < 1:
             limit = 1
-        if limit > 200:
-            limit = 200
+        max_search_limit = read_int_env("SIGN_TASK_CHAT_SEARCH_MAX_LIMIT", 200, minimum=1)
+        if limit > max_search_limit:
+            limit = max_search_limit
         if offset < 0:
             offset = 0
 
@@ -285,6 +292,8 @@ class SignTaskChatCacheService:
         proxy_value = get_account_proxy(account_name)
         if proxy_value:
             proxy_dict = build_proxy_dict(proxy_value)
+        max_dialogs = read_int_env("SIGN_TASK_CHAT_CACHE_MAX_DIALOGS", 200, minimum=1)
+
         client_kwargs = {
             "name": account_name,
             "workdir": session_dir,
@@ -312,7 +321,7 @@ class SignTaskChatCacheService:
                         async with active_client:
                             await active_client.get_me()
                             try:
-                                async for dialog in active_client.get_dialogs():
+                                async for dialog in active_client.get_dialogs(limit=max_dialogs):
                                     try:
                                         chat = getattr(dialog, "chat", None)
                                         if chat is None:

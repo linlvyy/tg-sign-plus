@@ -13,6 +13,7 @@ from backend.services.sign_task_runtime import (
     TaskLogHandler,
 )
 from backend.services.task_flow_logger import TaskFlowLogger
+from backend.utils.env import read_bool_env
 from backend.utils.account_locks import get_account_lock
 from backend.utils.proxy import build_proxy_dict
 from backend.utils.tg_session import (
@@ -311,7 +312,8 @@ class SignTaskExecutor:
                 tg_logger.setLevel(previous_tg_logger_level)
 
             final_logs = list(self._active_logs.get(task_key, []))
-            output_str = "\n".join(final_logs)
+            include_output = read_bool_env("SIGN_TASK_RETURN_FULL_OUTPUT", False)
+            output_str = "\n".join(final_logs) if include_output else ""
             msg = error_msg if not success else self._extract_last_reply(final_logs)
             self._save_run_info(
                 task_name,

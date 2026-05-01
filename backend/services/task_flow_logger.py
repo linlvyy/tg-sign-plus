@@ -17,11 +17,13 @@ class TaskFlowLogger:
         offset_ref: Dict[str, int],
         *,
         max_lines: int = 1000,
+        max_text_chars: int = 2000,
     ):
         self._text_logs = text_logs
         self._flow_items = flow_items
         self._offset_ref = offset_ref
         self._max_lines = max_lines
+        self._max_text_chars = max_text_chars
 
     @staticmethod
     def _now_iso() -> str:
@@ -58,13 +60,16 @@ class TaskFlowLogger:
         event: str = "info",
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        text = str(text)
+        if len(text) > self._max_text_chars:
+            text = text[: self._max_text_chars] + "..."
         ts = self._now_iso()
         item = {
             "ts": ts,
             "level": (level or "info").lower(),
             "stage": stage or "task",
             "event": event or "info",
-            "text": str(text),
+            "text": text,
             "meta": self._normalize_meta(meta),
         }
         self._flow_items.append(item)

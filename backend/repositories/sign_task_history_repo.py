@@ -18,7 +18,7 @@ class SignTaskHistoryRepo(abc.ABC):
 
     @abc.abstractmethod
     def load_entries(
-        self, task_name: str, account_name: str = ""
+        self, task_name: str, account_name: str = "", limit: int | None = None
     ) -> List[Dict[str, Any]]:
         ...
 
@@ -60,7 +60,7 @@ class DatabaseSignTaskHistoryRepo(SignTaskHistoryRepo):
         return self._session_factory()
 
     def load_entries(
-        self, task_name: str, account_name: str = ""
+        self, task_name: str, account_name: str = "", limit: int | None = None
     ) -> List[Dict[str, Any]]:
         from backend.models.sign_task_run import SignTaskRun
 
@@ -69,7 +69,10 @@ class DatabaseSignTaskHistoryRepo(SignTaskHistoryRepo):
             q = db.query(SignTaskRun).filter_by(task_name=task_name)
             if account_name:
                 q = q.filter_by(account_name=account_name)
-            rows = q.order_by(SignTaskRun.created_at.desc()).all()
+            q = q.order_by(SignTaskRun.created_at.desc())
+            if limit is not None:
+                q = q.limit(max(int(limit), 1))
+            rows = q.all()
             return [self._row_to_dict(r) for r in rows]
         finally:
             db.close()

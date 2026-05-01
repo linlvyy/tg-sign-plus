@@ -10,6 +10,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 
+from backend.utils.env import read_bool_env, read_int_env
+
 scheduler: AsyncIOScheduler | None = None
 
 
@@ -401,7 +403,8 @@ def get_scheduler_status(account_name: str | None = None) -> dict[str, object]:
     sign_jobs = [job for job in jobs if job.id.startswith("sign-") and not job.id.startswith("sign-exec-")]
 
     sign_task_service = get_sign_task_service()
-    sign_tasks = sign_task_service.list_tasks(force_refresh=True)
+    force_refresh = read_bool_env("SIGN_TASK_SCHEDULER_STATUS_FORCE_REFRESH", False)
+    sign_tasks = sign_task_service.list_tasks(force_refresh=force_refresh)
     if account_name:
         sign_tasks = [
             task for task in sign_tasks if task.get("account_name") == account_name
@@ -534,7 +537,7 @@ async def init_scheduler(sync_on_startup: bool = True) -> AsyncIOScheduler:
             job_defaults={
                 "misfire_grace_time": 3600,
                 "coalesce": True,
-                "max_instances": 10,
+                "max_instances": read_int_env("SIGN_TASK_SCHEDULER_MAX_INSTANCES", 2, minimum=1),
             },
         )
         scheduler.start()

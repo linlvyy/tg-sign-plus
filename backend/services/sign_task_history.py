@@ -106,9 +106,9 @@ class SignTaskHistoryService:
         return self._history_repo.prune_older_than(cutoff)
 
     def load_history_entries(
-        self, task_name: str, account_name: str = ""
+        self, task_name: str, account_name: str = "", limit: int | None = None
     ) -> List[Dict[str, Any]]:
-        return self._history_repo.load_entries(task_name, account_name)
+        return self._history_repo.load_entries(task_name, account_name, limit=limit)
 
     def get_task_history_logs(
         self, task_name: str, account_name: str, limit: int = 20
@@ -119,9 +119,9 @@ class SignTaskHistoryService:
             limit = 200
 
         self.prune_expired_history_logs()
-        history = self.load_history_entries(task_name, account_name=account_name)
+        history = self.load_history_entries(task_name, account_name=account_name, limit=limit)
         result: List[Dict[str, Any]] = []
-        for item in history[:limit]:
+        for item in history:
             flow_logs = item.get("flow_logs")
             if not isinstance(flow_logs, list):
                 flow_logs = []

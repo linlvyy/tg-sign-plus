@@ -7,10 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
+from backend.utils.env import read_int_env
 from backend.services.sign_task_chat_cache import SignTaskChatCacheService
 from backend.services.sign_task_executor import SignTaskExecutor
 from backend.services.sign_task_history import SignTaskHistoryService
@@ -21,16 +21,6 @@ settings = get_settings()
 
 class SignTaskService:
     """签到任务服务类"""
-
-    @staticmethod
-    def _read_positive_int_env(name: str, default: int, minimum: int = 1) -> int:
-        raw = os.getenv(name)
-        if raw is None:
-            return default
-        try:
-            return max(int(raw), minimum)
-        except (TypeError, ValueError):
-            return default
 
     def __init__(self):
         from backend.core.config import get_settings
@@ -50,17 +40,17 @@ class SignTaskService:
         self._tasks_cache_ref = {"value": None}
         self._account_locks: Dict[str, asyncio.Lock] = {}  # 账号锁
         self._account_last_run_end: Dict[str, float] = {}  # 账号最后一次结束时间
-        self._account_cooldown_seconds = int(
-            os.getenv("SIGN_TASK_ACCOUNT_COOLDOWN", "5")
+        self._account_cooldown_seconds = read_int_env(
+            "SIGN_TASK_ACCOUNT_COOLDOWN", 5, minimum=0
         )
-        self._history_max_entries = self._read_positive_int_env(
-            "SIGN_TASK_HISTORY_MAX_ENTRIES", 100, 10
+        self._history_max_entries = read_int_env(
+            "SIGN_TASK_HISTORY_MAX_ENTRIES", 100, minimum=10
         )
-        self._history_max_flow_lines = self._read_positive_int_env(
-            "SIGN_TASK_HISTORY_MAX_FLOW_LINES", 200, 20
+        self._history_max_flow_lines = read_int_env(
+            "SIGN_TASK_HISTORY_MAX_FLOW_LINES", 200, minimum=20
         )
-        self._history_max_line_chars = self._read_positive_int_env(
-            "SIGN_TASK_HISTORY_MAX_LINE_CHARS", 500, 80
+        self._history_max_line_chars = read_int_env(
+            "SIGN_TASK_HISTORY_MAX_LINE_CHARS", 500, minimum=80
         )
         self._history_service = SignTaskHistoryService(
             self._history_repo,

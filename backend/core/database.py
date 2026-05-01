@@ -7,6 +7,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from backend.core.config import get_settings
+from backend.utils.env import read_int_env
 
 Base = declarative_base()
 
@@ -28,15 +29,16 @@ def init_engine() -> None:
     kwargs: dict = {"echo": False}
 
     if _is_sqlite(db_url):
-        kwargs["connect_args"] = {"check_same_thread": False, "timeout": 30}
+        timeout = read_int_env("APP_DB_SQLITE_TIMEOUT", 30, minimum=1)
+        kwargs["connect_args"] = {"check_same_thread": False, "timeout": timeout}
     else:
         kwargs.update(
             {
                 "pool_pre_ping": True,
-                "pool_recycle": 1800,
-                "pool_timeout": 30,
-                "pool_size": 20,        # 从 5 增加到 20
-                "max_overflow": 30,     # 从 10 增加到 30
+                "pool_recycle": read_int_env("APP_DB_POOL_RECYCLE", 1800, minimum=1),
+                "pool_timeout": read_int_env("APP_DB_POOL_TIMEOUT", 30, minimum=1),
+                "pool_size": read_int_env("APP_DB_POOL_SIZE", 5, minimum=1),
+                "max_overflow": read_int_env("APP_DB_MAX_OVERFLOW", 10, minimum=0),
                 "pool_use_lifo": True,
             }
         )

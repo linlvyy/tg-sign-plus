@@ -8,7 +8,7 @@ from sqlalchemy.engine import Connection, Engine
 
 from backend.core.database import Base
 
-LATEST_SCHEMA_VERSION = 4
+LATEST_SCHEMA_VERSION = 5
 
 
 _OBSOLETE_TABLE_DROP_ORDER = [
@@ -295,11 +295,33 @@ def _upgrade_to_v4(conn: Connection) -> None:
         )
 
 
+def _upgrade_to_v5(conn: Connection) -> None:
+    tables = _table_names(conn)
+    if "sign_task_runs" not in tables:
+        return
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sign_task_runs_account_task_created ON sign_task_runs (account_name, task_name, created_at)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sign_task_runs_account_created ON sign_task_runs (account_name, created_at)"
+        )
+    )
+    conn.execute(
+        text(
+            "CREATE INDEX IF NOT EXISTS ix_sign_task_runs_created_at ON sign_task_runs (created_at)"
+        )
+    )
+
+
 _MIGRATIONS: list[tuple[int, Callable[[Connection], None]]] = [
     (1, _upgrade_to_v1),
     (2, _upgrade_to_v2),
     (3, _upgrade_to_v3),
     (4, _upgrade_to_v4),
+    (5, _upgrade_to_v5),
 ]
 
 
