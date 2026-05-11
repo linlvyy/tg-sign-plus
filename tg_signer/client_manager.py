@@ -16,7 +16,7 @@ from pyrogram.storage import MemoryStorage
 
 logger = logging.getLogger("tg-signer")
 
-Session.START_TIMEOUT = 5
+Session.START_TIMEOUT = 15
 
 _CLIENT_INSTANCES: dict[str, "Client"] = {}
 _CLIENT_REFS: defaultdict[str, int] = defaultdict(int)

@@ -81,14 +81,14 @@ sqlite3.connect = _patched_sqlite3_connect
 
 # Monkeypatch pyrogram.Client.invoke to add backpressure and retry logic for updates
 _original_invoke = BaseClient.invoke
-_get_channel_diff_semaphore = asyncio.Semaphore(50)
+_get_channel_diff_semaphore = asyncio.Semaphore(int(os.environ.get("TG_CHANNEL_DIFF_CONCURRENCY", "2")))
 
 async def _patched_invoke(self, query, *args, **kwargs):
     if isinstance(query, (raw.functions.updates.GetChannelDifference, raw.functions.updates.GetDifference)):
         # Disable Pyrogram's internal sleep and retry mechanisms to prevent blocking the semaphore indefinitely
         kwargs.setdefault("sleep_threshold", 0)
         kwargs["retries"] = 0
-        kwargs.setdefault("timeout", 5.0)
+        kwargs.setdefault("timeout", 15.0)
 
         async with _get_channel_diff_semaphore:
             max_retries = 2
