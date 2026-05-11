@@ -49,11 +49,13 @@ if [ "$(id -u)" -eq 0 ]; then
     done
   fi
 
+  UVICORN_CMD="uvicorn backend.main:app --host 0.0.0.0 --port ${PORT_VALUE} --workers 1 --limit-concurrency 20"
+
   # If mounted volume is root-owned, keep root to preserve writability.
   if [ "${TARGET_UID}" = "0" ] || [ "${TARGET_GID}" = "0" ]; then
-    exec uvicorn backend.main:app --host 0.0.0.0 --port "${PORT_VALUE}"
+    exec $UVICORN_CMD
   fi
-  exec gosu "${TARGET_UID}:${TARGET_GID}" uvicorn backend.main:app --host 0.0.0.0 --port "${PORT_VALUE}"
+  exec gosu "${TARGET_UID}:${TARGET_GID}" $UVICORN_CMD
 fi
 
-exec uvicorn backend.main:app --host 0.0.0.0 --port "${PORT_VALUE}"
+exec $UVICORN_CMD
