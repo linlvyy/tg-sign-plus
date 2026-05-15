@@ -223,8 +223,8 @@ TG_CHANNEL_DIFF_CONCURRENCY=2
 # 限制全局任务并发
 TG_GLOBAL_CONCURRENCY=1
 
-# 后端签到任务默认关闭实时 updates，依赖历史消息兜底，避免 Pyrogram update 任务风暴
-TG_SIGN_TASK_ENABLE_UPDATES=false
+# 低内存排障时可强制关闭后端签到实时 updates；按钮/回复类签到可能失败，默认不要设置
+# TG_SIGN_TASK_DISABLE_UPDATES=true
 
 # 减少 glibc 内存碎片（已内置于 Docker 镜像）
 MALLOC_ARENA_MAX=2
@@ -383,7 +383,7 @@ tg-signer list my_account
 | `SERVER_CHAN_SEND_KEY` | Server酱推送密钥 | - |
 | `TG_CHANNEL_DIFF_CONCURRENCY` | Telegram GetChannelDifference 并发数 | `2` |
 | `TG_GLOBAL_CONCURRENCY` | Telegram 任务全局并发数 | `1` |
-| `TG_SIGN_TASK_ENABLE_UPDATES` | 后端签到任务是否启用 Telegram 实时 updates（通常不需要） | `false` |
+| `TG_SIGN_TASK_DISABLE_UPDATES` | 强制关闭后端签到任务的 Telegram 实时 updates（仅低内存排障时使用） | `false` |
 | `MALLOC_ARENA_MAX` | glibc malloc arena 数量（降低可减少内存碎片） | `2` |
 
 ### 动作类型说明
