@@ -20,6 +20,7 @@ from backend.utils.tg_session import (
     get_account_session_string,
     get_global_semaphore,
 )
+from tg_signer.client_manager import close_client_by_name
 from tg_signer.wait_dispatcher import BusinessRetryableError
 
 settings = get_settings()
@@ -142,6 +143,7 @@ class SignTaskExecutor:
         success = False
         error_msg = ""
         output_str = ""
+        signer = None
 
         try:
             async with account_lock:
@@ -196,11 +198,14 @@ class SignTaskExecutor:
                     proxy_dict = build_proxy_dict(proxy_value)
 
                 task_cfg = self._get_task(task_name, account_name=account_name)
-                allow_sign_task_updates = (
-                    (os.getenv("TG_SIGN_TASK_ENABLE_UPDATES") or "").strip().lower()
+                disable_sign_task_updates = (
+                    (os.getenv("TG_SIGN_TASK_DISABLE_UPDATES") or "").strip().lower()
                     in {"1", "true", "yes", "on"}
                 )
-                requires_updates = allow_sign_task_updates and self.task_requires_updates(task_cfg)
+                requires_updates = (
+                    self.task_requires_updates(task_cfg)
+                    and not disable_sign_task_updates
+                )
                 signer_no_updates = not requires_updates
                 configured_retry_count = 0
                 if isinstance(task_cfg, dict):
@@ -310,6 +315,13 @@ class SignTaskExecutor:
             self._active_log_offsets[task_key] = active_log_offset_ref["value"]
             self._account_last_run_end[account_name] = time.time()
             self._active_tasks[task_key] = False
+            if signer is not None:
+                try:
+                    await close_client_by_name(account_name, workdir=signer._session_dir)
+                except Exception as cleanup_exc:
+                    logging.getLogger("backend").warning(
+                        "清理 Telegram client 失败: %s", cleanup_exc
+                    )
             tg_logger.removeHandler(log_handler)
             if should_restore_tg_logger_level:
                 tg_logger.setLevel(previous_tg_logger_level)
@@ -326,20 +338,13 @@ class SignTaskExecutor:
                 flow_items=flow_items,
             )
 
+            self._active_logs.pop(task_key, None)
+            self._active_log_offsets.pop(task_key, None)
+
             old_cleanup_task = self._cleanup_tasks.get(task_key)
             if old_cleanup_task and not old_cleanup_task.done():
                 old_cleanup_task.cancel()
-
-            async def cleanup():
-                try:
-                    await asyncio.sleep(60)
-                    if not self._active_tasks.get(task_key):
-                        self._active_logs.pop(task_key, None)
-                        self._active_log_offsets.pop(task_key, None)
-                finally:
-                    self._cleanup_tasks.pop(task_key, None)
-
-            self._cleanup_tasks[task_key] = asyncio.create_task(cleanup())
+            self._cleanup_tasks.pop(task_key, None)
 
         return {
             "success": success,
