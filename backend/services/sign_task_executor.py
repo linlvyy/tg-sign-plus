@@ -241,6 +241,12 @@ class SignTaskExecutor:
                     no_updates=signer_no_updates,
                 )
 
+                try:
+                    task_timeout_seconds = int(os.getenv("SIGN_TASK_RUN_TIMEOUT", "180") or "180")
+                except (TypeError, ValueError):
+                    task_timeout_seconds = 180
+                task_timeout_seconds = max(task_timeout_seconds, 30)
+
                 async with get_global_semaphore():
                     max_session_retries = 3
                     total_attempts = configured_retry_count + 1
@@ -257,7 +263,10 @@ class SignTaskExecutor:
                         try:
                             for attempt in range(max_session_retries):
                                 try:
-                                    await signer.run_once(num_of_dialogs=0)
+                                    await asyncio.wait_for(
+                                        signer.run_once(num_of_dialogs=0),
+                                        timeout=task_timeout_seconds,
+                                    )
                                     last_exception = None
                                     break
                                 except Exception as e:
