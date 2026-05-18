@@ -223,6 +223,12 @@ TG_CHANNEL_DIFF_CONCURRENCY=2
 # 限制全局任务并发
 TG_GLOBAL_CONCURRENCY=1
 
+# 限制 Telegram RPC 重试和连接等待时间，避免网络异常时长时间堆积后台任务
+TG_RPC_RETRIES=1
+TG_RPC_TIMEOUT=15
+TG_CONNECT_TIMEOUT=20
+SIGN_TASK_RUN_TIMEOUT=180
+
 # 低内存排障时可强制关闭后端签到实时 updates；按钮/回复类签到可能失败，默认不要设置
 # TG_SIGN_TASK_DISABLE_UPDATES=true
 
@@ -383,6 +389,10 @@ tg-signer list my_account
 | `SERVER_CHAN_SEND_KEY` | Server酱推送密钥 | - |
 | `TG_CHANNEL_DIFF_CONCURRENCY` | Telegram GetChannelDifference 并发数 | `2` |
 | `TG_GLOBAL_CONCURRENCY` | Telegram 任务全局并发数 | `1` |
+| `TG_RPC_RETRIES` | Telegram RPC 默认重试次数 | `1` |
+| `TG_RPC_TIMEOUT` | Telegram RPC 默认超时秒数 | `15` |
+| `TG_CONNECT_TIMEOUT` | Telegram 连接/认证阶段超时秒数 | `20` |
+| `SIGN_TASK_RUN_TIMEOUT` | 单次签到任务总超时秒数 | `180` |
 | `TG_SIGN_TASK_DISABLE_UPDATES` | 强制关闭后端签到任务的 Telegram 实时 updates（仅低内存排障时使用） | `false` |
 | `MALLOC_ARENA_MAX` | glibc malloc arena 数量（降低可减少内存碎片） | `2` |
 

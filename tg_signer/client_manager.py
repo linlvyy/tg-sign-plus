@@ -16,7 +16,15 @@ from pyrogram.storage import MemoryStorage
 
 logger = logging.getLogger("tg-signer")
 
-Session.START_TIMEOUT = 15
+def _read_float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+Session.START_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 15)
+_TG_CONNECT_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 20)
 
 _CLIENT_INSTANCES: dict[str, "Client"] = {}
 _CLIENT_REFS: defaultdict[str, int] = defaultdict(int)
@@ -43,15 +51,21 @@ class Client(BaseClient):
                 for attempt in range(max_retries):
                     try:
                         if not self.is_connected:
-                            await self.connect()
+                            await asyncio.wait_for(
+                                self.connect(), timeout=_TG_CONNECT_TIMEOUT
+                            )
 
                         try:
-                            await self.get_me()
+                            await asyncio.wait_for(
+                                self.get_me(), timeout=_TG_CONNECT_TIMEOUT
+                            )
                         except Exception as e:
                             raise ConnectionError(f"Session invalid: {e}")
 
                         try:
-                            await self.start()
+                            await asyncio.wait_for(
+                                self.start(), timeout=_TG_CONNECT_TIMEOUT
+                            )
                         except ConnectionError as e:
                             if "already connected" not in str(e).lower():
                                 raise e

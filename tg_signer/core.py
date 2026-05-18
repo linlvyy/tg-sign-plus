@@ -79,9 +79,27 @@ def _patched_sqlite3_connect(*args, **kwargs):
 
 sqlite3.connect = _patched_sqlite3_connect
 
+def _read_int_env(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(int(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
+
+
+def _read_float_env(name: str, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(float(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
+
+
 # Monkeypatch pyrogram.Client.invoke to add backpressure and retry logic for updates
 _original_invoke = BaseClient.invoke
-_get_channel_diff_semaphore = asyncio.Semaphore(int(os.environ.get("TG_CHANNEL_DIFF_CONCURRENCY", "2")))
+_get_channel_diff_semaphore = asyncio.Semaphore(
+    _read_int_env("TG_CHANNEL_DIFF_CONCURRENCY", 2, minimum=1)
+)
+_tg_rpc_retries = _read_int_env("TG_RPC_RETRIES", 1, minimum=0)
+_tg_rpc_timeout = _read_float_env("TG_RPC_TIMEOUT", 15, minimum=1.0)
 _original_handle_updates = BaseClient.handle_updates
 
 
@@ -111,11 +129,18 @@ BaseClient.handle_updates = _patched_handle_updates
 
 
 async def _patched_invoke(self, query, *args, **kwargs):
+    if len(args) < 1:
+        kwargs.setdefault("retries", _tg_rpc_retries)
+    if len(args) < 2:
+        kwargs.setdefault("timeout", _tg_rpc_timeout)
+
     if isinstance(query, (raw.functions.updates.GetChannelDifference, raw.functions.updates.GetDifference)):
         # Disable Pyrogram's internal sleep and retry mechanisms to prevent blocking the semaphore indefinitely
         kwargs.setdefault("sleep_threshold", 0)
-        kwargs["retries"] = 0
-        kwargs.setdefault("timeout", 15.0)
+        if len(args) < 1:
+            kwargs["retries"] = 0
+        if len(args) < 2:
+            kwargs.setdefault("timeout", _tg_rpc_timeout)
 
         async with _get_channel_diff_semaphore:
             max_retries = 2
