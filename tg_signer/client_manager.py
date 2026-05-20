@@ -26,6 +26,37 @@ def _read_float_env(name: str, default: float) -> float:
 Session.START_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 15)
 _TG_CONNECT_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 20)
 
+try:
+    from pyrogram.connection.transport.tcp.tcp import TCP
+
+    TCP.TIMEOUT = _read_float_env("TG_TCP_TIMEOUT", 8)
+except Exception:
+    pass
+
+
+async def _call_if_exists(obj, name: str):
+    method = getattr(obj, name, None)
+    if not method:
+        return
+    result = method()
+    if asyncio.iscoroutine(result):
+        await result
+
+
+async def _force_cleanup_client(client) -> None:
+    for obj, methods in (
+        (client, ("stop", "disconnect")),
+        (getattr(client, "session", None), ("stop", "disconnect")),
+        (getattr(getattr(client, "session", None), "connection", None), ("close", "disconnect")),
+    ):
+        if obj is None:
+            continue
+        for method in methods:
+            try:
+                await asyncio.wait_for(_call_if_exists(obj, method), timeout=3)
+            except Exception:
+                pass
+
 _CLIENT_INSTANCES: dict[str, "Client"] = {}
 _CLIENT_REFS: defaultdict[str, int] = defaultdict(int)
 _CLIENT_ASYNC_LOCKS: dict[str, asyncio.Lock] = {}
@@ -97,10 +128,7 @@ class Client(BaseClient):
                         if _CLIENT_REFS[self.key] <= 0:
                             _CLIENT_REFS.pop(self.key, None)
                             _CLIENT_INSTANCES.pop(self.key, None)
-                            try:
-                                await self.stop()
-                            except Exception:
-                                pass
+                            await _force_cleanup_client(self)
                         raise e
             return self
 
@@ -112,9 +140,7 @@ class Client(BaseClient):
             _CLIENT_REFS[self.key] -= 1
             if _CLIENT_REFS[self.key] == 0:
                 try:
-                    await self.stop()
-                except Exception:
-                    pass
+                    await _force_cleanup_client(self)
                 finally:
                     if _CLIENT_INSTANCES.get(self.key) is self:
                         _CLIENT_INSTANCES.pop(self.key, None)
@@ -212,8 +238,7 @@ async def close_client_by_name(name: str, workdir: Union[str, pathlib.Path] = ".
     client = _CLIENT_INSTANCES.get(key)
     if client:
         try:
-            if client.is_connected:
-                await client.stop()
+            await _force_cleanup_client(client)
         except Exception as e:
             logger.warning(f"Error stopping client {name}: {e}")
         finally:

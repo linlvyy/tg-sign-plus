@@ -227,6 +227,7 @@ TG_GLOBAL_CONCURRENCY=1
 TG_RPC_RETRIES=1
 TG_RPC_TIMEOUT=15
 TG_CONNECT_TIMEOUT=20
+TG_TCP_TIMEOUT=8
 SIGN_TASK_RUN_TIMEOUT=180
 
 # 低内存排障时可强制关闭后端签到实时 updates；按钮/回复类签到可能失败，默认不要设置
@@ -392,6 +393,7 @@ tg-signer list my_account
 | `TG_RPC_RETRIES` | Telegram RPC 默认重试次数 | `1` |
 | `TG_RPC_TIMEOUT` | Telegram RPC 默认超时秒数 | `15` |
 | `TG_CONNECT_TIMEOUT` | Telegram 连接/认证阶段超时秒数 | `20` |
+| `TG_TCP_TIMEOUT` | Telegram 底层 TCP 连接超时秒数 | `8` |
 | `SIGN_TASK_RUN_TIMEOUT` | 单次签到任务总超时秒数 | `180` |
 | `TG_SIGN_TASK_DISABLE_UPDATES` | 强制关闭后端签到任务的 Telegram 实时 updates（仅低内存排障时使用） | `false` |
 | `MALLOC_ARENA_MAX` | glibc malloc arena 数量（降低可减少内存碎片） | `2` |
