@@ -227,6 +227,7 @@ TG_GLOBAL_CONCURRENCY=1
 TG_RPC_RETRIES=1
 TG_RPC_TIMEOUT=15
 TG_CALLBACK_RETRIES=3
+TG_SUCCESS_ASSERT_TIMEOUT=30
 TG_CONNECT_TIMEOUT=20
 TG_TCP_TIMEOUT=8
 SIGN_TASK_RUN_TIMEOUT=180
@@ -394,6 +395,7 @@ tg-signer list my_account
 | `TG_RPC_RETRIES` | Telegram RPC 默认重试次数 | `1` |
 | `TG_RPC_TIMEOUT` | Telegram RPC 默认超时秒数 | `15` |
 | `TG_CALLBACK_RETRIES` | Telegram 按钮回调超时重试次数 | `3` |
+| `TG_SUCCESS_ASSERT_TIMEOUT` | 签到成功关键字等待秒数 | `30` |
 | `TG_CONNECT_TIMEOUT` | Telegram 连接/认证阶段超时秒数 | `20` |
 | `TG_TCP_TIMEOUT` | Telegram 底层 TCP 连接超时秒数 | `8` |
 | `SIGN_TASK_RUN_TIMEOUT` | 单次签到任务总超时秒数 | `180` |

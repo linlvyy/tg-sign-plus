@@ -18,6 +18,21 @@ if TYPE_CHECKING:
     from .ai_tools import AITools
 
 
+SIGN_RESULT_HINTS = (
+    "签到成功",
+    "签到过了",
+    "已经签到",
+    "已签到",
+    "今日已签",
+    "今天已经签到",
+)
+
+
+def _looks_like_sign_result_text(text: str) -> bool:
+    compact_text = "".join(str(text or "").split())
+    return any(hint in compact_text for hint in SIGN_RESULT_HINTS)
+
+
 async def reply_by_calculation_problem(
     *,
     message: Message,
@@ -68,9 +83,21 @@ async def reply_by_image_recognition(
     send_message: Callable[..., Awaitable],
     clean_text_for_send: Callable[[str], str],
     get_ai_tools: Callable[[], "AITools"],
+    result_text_store=None,
 ) -> bool:
     if not message.photo:
         return False
+    message_text = get_message_text_content(message)
+    if _looks_like_sign_result_text(message_text):
+        if isinstance(result_text_store, dict):
+            result_text_store[message.chat.id] = message_text
+        log(
+            "图片消息已包含签到结果，跳过 OCR 回复",
+            stage="action",
+            event="ai_image_recognition_skipped_sign_result",
+            meta={"chat_id": message.chat.id, "message_id": message.id},
+        )
+        return True
     log(
         "检测到图片，尝试识别并发送文本",
         stage="action",

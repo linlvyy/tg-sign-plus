@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Callable
@@ -9,6 +10,13 @@ from pyrogram.types import Message
 
 from tg_signer.config import AssertSuccessByTextAction
 from tg_signer.message_helpers import get_message_text_content, message_version, readable_message
+
+
+def _read_float_env(name: str, default: float, minimum: float = 1.0) -> float:
+    try:
+        return max(float(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
 
 
 def _message_time(message: Message) -> datetime | None:
@@ -39,6 +47,7 @@ async def assert_success_by_text(
     clean_text_for_match: Callable[[str], str],
     timeout: float = 15.0,
 ) -> bool:
+    timeout = max(timeout, _read_float_env("TG_SUCCESS_ASSERT_TIMEOUT", 30.0))
     keywords = [item.strip() for item in action.keywords if item and item.strip()]
     if not keywords:
         log(

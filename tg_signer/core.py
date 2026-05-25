@@ -1180,6 +1180,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             send_message=self.send_message,
             clean_text_for_send=self._clean_text_for_send,
             get_ai_tools=self.get_ai_tools,
+            result_text_store=self.context.last_callback_texts,
         )
 
     async def _click_button_by_calculation_problem(
