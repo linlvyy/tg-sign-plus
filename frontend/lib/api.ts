@@ -511,10 +511,25 @@ export type SignTaskAction =
   | { action: 3; text: string }
   | { action: 4 }
   | { action: 5 }
-  | { action: 6 }
+  | {
+      action: 6;
+      caption_pattern?: string;
+      captcha_lengths?: number[];
+      captcha_charset?: string;
+      captcha_case?: "preserve" | "upper" | "lower";
+      reply_to_message?: boolean;
+    }
   | { action: 7 }
   | { action: 8 }
-  | { action: 9; keywords: string[] };
+  | {
+      action: 9;
+      keywords: string[];
+      checked_keywords?: string[];
+      retry_keywords?: string[];
+      fail_keywords?: string[];
+      account_fail_keywords?: string[];
+      ignore_keywords?: string[];
+    };
 
 export interface SignTaskChat {
   chat_id: number;
@@ -522,6 +537,12 @@ export interface SignTaskChat {
   actions: SignTaskAction[];
   delete_after?: number;
   action_interval: number;
+  event_timeout?: number;
+  event_retries?: number;
+  event_retry_wait?: number;
+  event_history_limit?: number;
+  event_action_timeout?: number;
+  event_ai_fallback?: boolean;
 }
 
 export interface LastRunInfo {
@@ -538,6 +559,7 @@ export interface SignTask {
   random_seconds: number;
   sign_interval: number;
   retry_count: number;
+  engine?: "legacy" | "event";
   enabled: boolean;
   last_run?: LastRunInfo | null;
   execution_mode?: "fixed" | "range";
@@ -554,6 +576,7 @@ export interface CreateSignTaskRequest {
   random_seconds?: number;
   sign_interval?: number;
   retry_count?: number;
+  engine?: "legacy" | "event";
   execution_mode?: "fixed" | "range";
   range_start?: string;
   range_end?: string;
@@ -565,6 +588,7 @@ export interface UpdateSignTaskRequest {
   random_seconds?: number;
   sign_interval?: number;
   retry_count?: number;
+  engine?: "legacy" | "event";
   execution_mode?: "fixed" | "range";
   range_start?: string;
   range_end?: string;
@@ -729,7 +753,82 @@ export interface SignTaskHistoryItem {
   flow_items?: SignTaskFlowItem[];
   flow_truncated?: boolean;
   flow_line_count?: number;
+  diagnostics?: {
+    status: "pass" | "warn" | "fail" | "unknown" | string;
+    summary: string;
+    checks: Array<{
+      id: string;
+      label: string;
+      status: "pass" | "warn" | "fail" | "skip" | "unknown" | string;
+      detail?: string;
+    }>;
+    milestones: Record<string, string | number | boolean | null>;
+  };
 }
+
+export interface SignTaskCanaryRun {
+  status: "pass" | "warn" | "fail" | "missing" | "stale" | "unknown" | string;
+  success: boolean;
+  time?: string;
+  age_hours?: number | null;
+  fresh?: boolean;
+  message?: string;
+  diagnostics?: SignTaskHistoryItem["diagnostics"];
+}
+
+export interface SignTaskCanaryCheck {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail" | "skip" | "unknown" | string;
+  detail?: string;
+}
+
+export interface SignTaskCanaryTask {
+  task_name: string;
+  account_name: string;
+  engine: string;
+  status: "pass" | "warn" | "fail" | "missing" | "stale" | "unknown" | string;
+  config_status?: "pass" | "warn" | "fail" | "missing" | "stale" | "unknown" | string;
+  run_status?: "pass" | "warn" | "fail" | "missing" | "stale" | "unknown" | string;
+  config_checks?: SignTaskCanaryCheck[];
+  latest_time?: string;
+  latest_summary?: string;
+  runs: SignTaskCanaryRun[];
+}
+
+export interface SignTaskCanaryTarget {
+  id: string;
+  label: string;
+  status: "pass" | "warn" | "fail" | "missing" | "unconfigured" | "stale" | "unknown" | string;
+  summary: string;
+  expected?: {
+    chat_ids?: number[];
+    names?: string[];
+  };
+  tasks: SignTaskCanaryTask[];
+}
+
+export interface SignTaskCanaryReport {
+  status: "pass" | "warn" | "fail" | "missing" | "unknown" | string;
+  generated_at?: string;
+  max_age_hours?: number | null;
+  task_count?: number;
+  targets: SignTaskCanaryTarget[];
+}
+
+export const getSignTaskCanaryReport = (
+  accountName?: string,
+  historyLimit: number = 1,
+  maxAgeHours?: number
+) => {
+  const params = new URLSearchParams();
+  if (accountName) params.append("account_name", accountName);
+  params.append("history_limit", String(historyLimit));
+  if (maxAgeHours !== undefined) params.append("max_age_hours", String(maxAgeHours));
+  return request<SignTaskCanaryReport>(
+    `/sign-tasks/canary/report?${params.toString()}`
+  );
+};
 
 export const getSignTaskHistory = (
   name: string,
@@ -743,5 +842,3 @@ export const getSignTaskHistory = (
     `/sign-tasks/${pathSegment(name)}/history?${params.toString()}`
   );
 };
-
-

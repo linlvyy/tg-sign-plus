@@ -9,6 +9,7 @@ import {
     deleteSignTask,
     runSignTask,
     getSignTaskHistory,
+    getSignTaskCanaryReport,
     getAccountChats,
     refreshAccountChats,
     searchAccountChats,
@@ -21,6 +22,7 @@ import {
     SignTask,
     SignTaskFlowItem,
     SignTaskHistoryItem,
+    SignTaskCanaryReport,
     ChatInfo,
     CreateSignTaskRequest,
     SchedulerStatus,
@@ -97,14 +99,24 @@ type HistoryLogView = "read" | "ai" | "json";
 const HISTORY_META_KEYS = new Set([
     "chat_id",
     "message_id",
+    "source",
+    "source_message_id",
     "timeout",
     "keyword",
     "keywords",
     "attempt",
     "total_attempts",
+    "retry_count",
     "action_index",
+    "action",
     "button_text",
     "target_text",
+    "option_text",
+    "selected_index",
+    "reply_to_message",
+    "status",
+    "result",
+    "reason",
     "error",
     "error_type",
 ]);
@@ -235,6 +247,45 @@ const groupHistoryFlowItemsByStep = (flowItems: SignTaskFlowItem[] | undefined, 
     return groups;
 };
 
+const diagnosticTone = (status: string | undefined) => {
+    switch (status) {
+        case "pass": return "success";
+        case "warn": return "warning";
+        case "stale": return "warning";
+        case "fail": return "danger";
+        default: return "neutral";
+    }
+};
+
+const diagnosticLabel = (status: string | undefined, isZh: boolean) => {
+    switch (status) {
+        case "pass": return isZh ? "诊断通过" : "Checks passed";
+        case "warn": return isZh ? "需观察" : "Watch";
+        case "fail": return isZh ? "诊断失败" : "Failed checks";
+        default: return isZh ? "未诊断" : "Unknown";
+    }
+};
+
+const canaryStatusLabel = (status: string | undefined, isZh: boolean) => {
+    switch (status) {
+        case "pass": return isZh ? "通过" : "Pass";
+        case "warn": return isZh ? "需观察" : "Watch";
+        case "fail": return isZh ? "失败" : "Fail";
+        case "missing": return isZh ? "无历史" : "No history";
+        case "unconfigured": return isZh ? "未配置" : "Missing config";
+        case "stale": return isZh ? "已过期" : "Stale";
+        default: return isZh ? "未知" : "Unknown";
+    }
+};
+
+const canaryCheckSummary = (task: SignTaskCanaryReport["targets"][number]["tasks"][number], isZh: boolean) => {
+    const checks = task.config_checks || [];
+    const importantChecks = checks.filter((check) => check.status === "fail" || check.status === "warn").slice(0, 2);
+    if (importantChecks.length === 0) return "";
+    const prefix = isZh ? "配置检查" : "Config";
+    return `${prefix}: ${importantChecks.map((check) => check.label || check.id).join(", ")}`;
+};
+
 const formatInlineMeta = (meta: SignTaskFlowItem["meta"] | undefined, detailed = false, text?: string) => {
     if (!meta) return "";
     const sourceText = cleanFlowText(text || "");
@@ -318,6 +369,7 @@ const formatHistoryForAi = ({
 - 最后成功动作：${diagnostics.lastSuccess}
 - 步骤进度：${diagnostics.completedSteps}/${diagnostics.totalSteps}
 - 耗时：${diagnostics.duration}
+- 事件诊断：${log.diagnostics?.summary || "未生成"}
 
 ## 分步骤时间线
 ${diagnostics.groups.map((group) => {
@@ -430,7 +482,21 @@ type TaskFilterKey = "all" | "enabled" | "disabled" | "success" | "failed" | "pe
 
 type ActionTypeOption = "1" | "2" | "3" | "ai_vision" | "ai_logic" | "ai_poetry" | "assert_success";
 
-type SuccessAssertionFormAction = { action: 9; keywords: string[]; raw_input: string };
+type SuccessAssertionFormAction = {
+    action: 9;
+    keywords: string[];
+    raw_input: string;
+    checked_keywords?: string[];
+    checked_raw_input?: string;
+    retry_keywords?: string[];
+    retry_raw_input?: string;
+    fail_keywords?: string[];
+    fail_raw_input?: string;
+    account_fail_keywords?: string[];
+    account_fail_raw_input?: string;
+    ignore_keywords?: string[];
+    ignore_raw_input?: string;
+};
 type TaskFormAction = Exclude<SignTaskAction, { action: 9; keywords: string[] }> | SuccessAssertionFormAction;
 
 const isSuccessAssertionAction = (action: TaskFormAction | SignTaskAction | null | undefined): action is SuccessAssertionFormAction | { action: 9; keywords: string[] } => {
@@ -448,6 +514,13 @@ type TaskFormState = {
     actions: TaskFormAction[];
     delete_after: number | undefined;
     action_interval: number;
+    event_timeout: number | undefined;
+    event_retries: number | undefined;
+    event_retry_wait: number | undefined;
+    event_history_limit: number | undefined;
+    event_action_timeout: number | undefined;
+    event_ai_fallback: boolean | undefined;
+    engine: "legacy" | "event";
     execution_mode: "fixed" | "range";
     range_start: string;
     range_end: string;
@@ -457,13 +530,57 @@ const defaultTaskAction = (): TaskFormAction => ({ action: 1, text: "" });
 const toSuccessKeywords = (value: string) => value.split("#").map((item) => item.trim()).filter(Boolean);
 const normalizeTaskActions = (actions: TaskFormAction[]): SignTaskAction[] => actions.map((action) => {
     if (isSuccessAssertionAction(action)) {
-        return { action: 9, keywords: toSuccessKeywords(action.raw_input) };
+        const checkedKeywords = toSuccessKeywords(action.checked_raw_input || "");
+        const retryKeywords = toSuccessKeywords(action.retry_raw_input || "");
+        const failKeywords = toSuccessKeywords(action.fail_raw_input || "");
+        const accountFailKeywords = toSuccessKeywords(action.account_fail_raw_input || "");
+        const ignoreKeywords = toSuccessKeywords(action.ignore_raw_input || "");
+        return {
+            action: 9,
+            keywords: toSuccessKeywords(action.raw_input),
+            ...(checkedKeywords.length > 0 ? { checked_keywords: checkedKeywords } : {}),
+            ...(retryKeywords.length > 0 ? { retry_keywords: retryKeywords } : {}),
+            ...(failKeywords.length > 0 ? { fail_keywords: failKeywords } : {}),
+            ...(accountFailKeywords.length > 0 ? { account_fail_keywords: accountFailKeywords } : {}),
+            ...(ignoreKeywords.length > 0 ? { ignore_keywords: ignoreKeywords } : {}),
+        };
+    }
+    if (action.action === 6) {
+        const captionPattern = action.caption_pattern?.trim();
+        const captchaLengths = (action.captcha_lengths || []).filter((item) => Number.isInteger(item) && item > 0);
+        const captchaCharset = action.captcha_charset?.trim();
+        return {
+            action: 6,
+            ...(captionPattern ? { caption_pattern: captionPattern } : {}),
+            ...(captchaLengths.length > 0 ? { captcha_lengths: captchaLengths } : {}),
+            ...(captchaCharset ? { captcha_charset: captchaCharset } : {}),
+            ...(action.captcha_case && action.captcha_case !== "preserve" ? { captcha_case: action.captcha_case } : {}),
+            ...(action.reply_to_message ? { reply_to_message: true } : {}),
+        };
     }
     return action;
 });
 const toTaskFormAction = (action: SignTaskAction): TaskFormAction => {
     if (isSuccessAssertionAction(action)) {
-        return { ...action, raw_input: action.keywords.join(" # ") };
+        return {
+            ...action,
+            raw_input: action.keywords.join(" # "),
+            checked_raw_input: (action.checked_keywords || []).join(" # "),
+            retry_raw_input: (action.retry_keywords || []).join(" # "),
+            fail_raw_input: (action.fail_keywords || []).join(" # "),
+            account_fail_raw_input: (action.account_fail_keywords || []).join(" # "),
+            ignore_raw_input: (action.ignore_keywords || []).join(" # "),
+        };
+    }
+    if (action.action === 6) {
+        return {
+            action: 6,
+            caption_pattern: action.caption_pattern || "",
+            captcha_lengths: action.captcha_lengths || [],
+            captcha_charset: action.captcha_charset || "",
+            captcha_case: action.captcha_case || "preserve",
+            reply_to_message: Boolean(action.reply_to_message),
+        };
     }
     return action;
 };
@@ -727,6 +844,92 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
 
 TaskItem.displayName = "TaskItem";
 
+const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
+    report: SignTaskCanaryReport | null;
+    loading: boolean;
+    onRefresh: () => void;
+    isZh: boolean;
+}) => {
+    const targets = report?.targets || [];
+    return (
+        <section className="glass-panel p-4 md:p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                        <Robot weight="bold" size={18} className="text-[var(--accent)]" />
+                        <h2 className="text-base font-semibold text-[var(--text-primary)]">
+                            {isZh ? "事件引擎 canary" : "Event canary"}
+                        </h2>
+                        <StatusBadge tone={diagnosticTone(report?.status) as any} className="normal-case tracking-normal">
+                            {canaryStatusLabel(report?.status, isZh)}
+                        </StatusBadge>
+                    </div>
+                    <div className="mt-1 text-xs text-[var(--text-tertiary)]">
+                        {isZh ? "peach、喵了个咪、厂妹的最新历史诊断汇总" : "Latest diagnostics for peach, meow, and factory flows"}
+                    </div>
+                </div>
+                <Button size="sm" variant="secondary" onClick={onRefresh} disabled={loading}>
+                    {loading ? <Spinner className="animate-spin" size={14} /> : <ArrowClockwise weight="bold" size={14} />}
+                    {isZh ? "刷新" : "Refresh"}
+                </Button>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+                {targets.length > 0 ? targets.map((target) => (
+                    <div key={target.id} className="rounded-xl border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] px-4 py-3">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="min-w-0 truncate text-sm font-semibold text-[var(--text-primary)]">
+                                {target.label}
+                            </div>
+                            <StatusBadge tone={diagnosticTone(target.status) as any} className="shrink-0 normal-case tracking-normal">
+                                {canaryStatusLabel(target.status, isZh)}
+                            </StatusBadge>
+                        </div>
+                        <div className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">
+                            {target.summary}
+                        </div>
+                        {target.tasks.length > 0 ? (
+                            <div className="mt-2 space-y-1">
+                                {target.tasks.slice(0, 2).map((task) => (
+                                    <div key={`${task.account_name}/${task.task_name}`} className="space-y-0.5 text-[11px] leading-5 text-[var(--text-tertiary)]">
+                                        <div className="truncate">
+                                            {task.account_name}/{task.task_name} · {canaryStatusLabel(task.status, isZh)}
+                                        </div>
+                                        <div className="truncate">
+                                            {isZh ? "配置" : "Config"}={canaryStatusLabel(task.config_status || "unknown", isZh)}
+                                            {" · "}
+                                            {isZh ? "运行" : "Run"}={canaryStatusLabel(task.run_status || "unknown", isZh)}
+                                            {task.latest_time ? ` · ${task.latest_time}` : ""}
+                                        </div>
+                                        {canaryCheckSummary(task, isZh) ? (
+                                            <div className="truncate text-[var(--text-secondary)]">
+                                                {canaryCheckSummary(task, isZh)}
+                                            </div>
+                                        ) : null}
+                                        {task.latest_summary ? (
+                                            <div className="line-clamp-2 leading-5 text-[var(--text-secondary)]">
+                                                {task.latest_summary}
+                                            </div>
+                                        ) : null}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : target.expected ? (
+                            <div className="mt-2 truncate text-[11px] leading-5 text-[var(--text-tertiary)]">
+                                {isZh ? "期望" : "Expected"}: {(target.expected.names || []).slice(0, 2).join(", ")} · {(target.expected.chat_ids || []).join(", ")}
+                            </div>
+                        ) : null}
+                    </div>
+                )) : (
+                    <div className="rounded-xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-tertiary)] px-4 py-5 text-sm text-[var(--text-tertiary)] md:col-span-3">
+                        {isZh ? "暂无 canary 诊断数据" : "No canary diagnostics yet"}
+                    </div>
+                )}
+            </div>
+        </section>
+    );
+};
+
 export default function AccountTasksContent() {
     const router = useRouter();
     const { t, language } = useLanguage();
@@ -742,6 +945,8 @@ export default function AccountTasksContent() {
     const [tasks, setTasks] = useState<SignTask[]>([]);
     const [chats, setChats] = useState<ChatInfo[]>([]);
     const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
+    const [canaryReport, setCanaryReport] = useState<SignTaskCanaryReport | null>(null);
+    const [canaryLoading, setCanaryLoading] = useState(false);
     const [chatSearch, setChatSearch] = useState("");
     const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
     const [chatSearchLoading, setChatSearchLoading] = useState(false);
@@ -805,6 +1010,13 @@ export default function AccountTasksContent() {
         actions: [defaultTaskAction()],
         delete_after: undefined,
         action_interval: 1,
+        event_timeout: undefined,
+        event_retries: undefined,
+        event_retry_wait: undefined,
+        event_history_limit: undefined,
+        event_action_timeout: undefined,
+        event_ai_fallback: undefined,
+        engine: "event",
         execution_mode: "range",
         range_start: "09:00",
         range_end: "18:00",
@@ -823,6 +1035,13 @@ export default function AccountTasksContent() {
         actions: [defaultTaskAction()],
         delete_after: undefined,
         action_interval: 1,
+        event_timeout: undefined,
+        event_retries: undefined,
+        event_retry_wait: undefined,
+        event_history_limit: undefined,
+        event_action_timeout: undefined,
+        event_ai_fallback: undefined,
+        engine: "event",
         execution_mode: "fixed",
         range_start: "09:00",
         range_end: "18:00",
@@ -850,6 +1069,9 @@ export default function AccountTasksContent() {
     const assertSuccessPlaceholder = isZh ? "\u591A\u4E2A\u5173\u952E\u5B57\u7528 # \u5206\u9694" : "Separate keywords with #";
     const aiVisionSendModeLabel = isZh ? "\u8BC6\u56FE\u540E\u53D1\u6587\u672C" : "Vision -> Send Text";
     const aiVisionClickModeLabel = isZh ? "\u8BC6\u56FE\u540E\u70B9\u6309\u94AE" : "Vision -> Click Button";
+    const aiVisionCaptionPatternPlaceholder = isZh ? "caption 正则，如：请输入验证码" : "Caption regex, e.g. captcha";
+    const aiVisionCaptchaLengthsPlaceholder = isZh ? "长度，如：4 或 4,5" : "Lengths, e.g. 4 or 4,5";
+    const aiVisionCaptchaCharsetPlaceholder = isZh ? "允许字符，如：A-Z0-9" : "Allowed chars, e.g. A-Z0-9";
     const aiCalcSendModeLabel = isZh ? "\u8BA1\u7B97\u540E\u53D1\u6587\u672C" : "Math -> Send Text";
     const aiCalcClickModeLabel = isZh ? "\u8BA1\u7B97\u540E\u70B9\u6309\u94AE" : "Math -> Click Button";
     const aiPoetryClickModeLabel = isZh ? "\u586B\u8BD7\u540E\u70B9\u6309\u94AE" : "Poetry Fill -> Click Button";
@@ -921,12 +1143,14 @@ export default function AccountTasksContent() {
     const loadData = useCallback(async () => {
         try {
             setLoading(true);
-            const [tasksData, schedulerData] = await Promise.all([
+            const [tasksData, schedulerData, canaryData] = await Promise.all([
                 listSignTasks(accountName),
                 getSchedulerStatus(accountName),
+                getSignTaskCanaryReport(accountName),
             ]);
             setTasks(tasksData);
             setSchedulerStatus(schedulerData);
+            setCanaryReport(canaryData);
         } catch (err: any) {
             if (handleAccountSessionInvalid(err)) return;
             const toast = addToastRef.current;
@@ -938,6 +1162,30 @@ export default function AccountTasksContent() {
             setLoading(false);
         }
     }, [accountName, formatErrorMessage, handleAccountSessionInvalid]);
+
+    const refreshCanaryReport = useCallback(async (silent = false) => {
+        if (!token || !accountName) return;
+        try {
+            if (!silent) {
+                setCanaryLoading(true);
+            }
+            const report = await getSignTaskCanaryReport(accountName);
+            setCanaryReport(report);
+            return report;
+        } catch (err: any) {
+            if (handleAccountSessionInvalid(err)) return;
+            if (!silent) {
+                const toast = addToastRef.current;
+                if (toast) {
+                    toast(formatErrorMessage("load_failed", err), "error");
+                }
+            }
+        } finally {
+            if (!silent) {
+                setCanaryLoading(false);
+            }
+        }
+    }, [token, accountName, formatErrorMessage, handleAccountSessionInvalid]);
 
     const loadChatCache = useCallback(async (options?: { forceRefresh?: boolean; autoRefreshIfExpired?: boolean; ensureExists?: boolean; silent?: boolean }) => {
         if (!token || !accountName) return;
@@ -1078,14 +1326,16 @@ export default function AccountTasksContent() {
         if (!token || !historyTaskName) return;
         const timer = setInterval(async () => {
             try {
-                const [logs, latestTasks, latestSchedulerStatus] = await Promise.all([
+                const [logs, latestTasks, latestSchedulerStatus, latestCanaryReport] = await Promise.all([
                     getSignTaskHistory(historyTaskName, accountName, 30),
                     listSignTasks(accountName),
                     getSchedulerStatus(accountName),
+                    getSignTaskCanaryReport(accountName),
                 ]);
                 setHistoryLogs(logs);
                 setTasks(latestTasks);
                 setSchedulerStatus(latestSchedulerStatus);
+                setCanaryReport(latestCanaryReport);
             } catch {}
         }, 2000);
         return () => clearInterval(timer);
@@ -1109,14 +1359,16 @@ export default function AccountTasksContent() {
                 setLiveMonitorTaskName(null);
                 try {
                     const currentHistoryTaskName = historyTaskNameRef.current;
-                    const [latestTasks, latestRunLogs, currentHistoryLogs, latestSchedulerStatus] = await Promise.all([
+                    const [latestTasks, latestRunLogs, currentHistoryLogs, latestSchedulerStatus, latestCanaryReport] = await Promise.all([
                         listSignTasks(accountName),
                         getSignTaskHistory(liveMonitorTaskName, accountName, 1),
                         currentHistoryTaskName ? getSignTaskHistory(currentHistoryTaskName, accountName, 30) : Promise.resolve(null),
                         getSchedulerStatus(accountName),
+                        getSignTaskCanaryReport(accountName),
                     ]);
                     setTasks(latestTasks);
                     setSchedulerStatus(latestSchedulerStatus);
+                    setCanaryReport(latestCanaryReport);
                     if (currentHistoryLogs) {
                         setHistoryLogs(currentHistoryLogs);
                     }
@@ -1461,8 +1713,15 @@ export default function AccountTasksContent() {
                     actions: normalizeTaskActions(newTask.actions),
                     delete_after: newTask.delete_after,
                     action_interval: newTask.action_interval,
+                    event_timeout: newTask.event_timeout,
+                    event_retries: newTask.event_retries,
+                    event_retry_wait: newTask.event_retry_wait,
+                    event_history_limit: newTask.event_history_limit,
+                    event_action_timeout: newTask.event_action_timeout,
+                    event_ai_fallback: newTask.event_ai_fallback,
                 }],
                 random_seconds: newTask.random_minutes * 60,
+                engine: newTask.engine,
                 execution_mode: newTask.execution_mode,
                 range_start: newTask.range_start,
                 range_end: newTask.range_end,
@@ -1482,6 +1741,13 @@ export default function AccountTasksContent() {
                 actions: [defaultTaskAction()],
                 delete_after: undefined,
                 action_interval: 1,
+                event_timeout: undefined,
+                event_retries: undefined,
+                event_retry_wait: undefined,
+                event_history_limit: undefined,
+                event_action_timeout: undefined,
+                event_ai_fallback: undefined,
+                engine: "event",
                 execution_mode: "fixed",
                 range_start: "09:00",
                 range_end: "18:00",
@@ -1521,6 +1787,13 @@ export default function AccountTasksContent() {
             actions: chat?.actions?.map(toTaskFormAction) || [defaultTaskAction()],
             delete_after: chat?.delete_after,
             action_interval: chat?.action_interval || 1,
+            event_timeout: chat?.event_timeout,
+            event_retries: chat?.event_retries,
+            event_retry_wait: chat?.event_retry_wait,
+            event_history_limit: chat?.event_history_limit,
+            event_action_timeout: chat?.event_action_timeout,
+            event_ai_fallback: chat?.event_ai_fallback,
+            engine: task.engine || "event",
             execution_mode: task.execution_mode || "fixed",
             range_start: task.range_start || "09:00",
             range_end: task.range_end || "18:00",
@@ -1548,12 +1821,19 @@ export default function AccountTasksContent() {
                 sign_at: editTask.sign_at,
                 random_seconds: editTask.random_minutes * 60,
                 retry_count: editTask.retry_count,
+                engine: editTask.engine,
                 chats: [{
                     chat_id: chatId,
                     name: editTask.chat_name || t("chat_default_name").replace("{id}", String(chatId)),
                     actions: normalizeTaskActions(editTask.actions),
                     delete_after: editTask.delete_after,
                     action_interval: editTask.action_interval,
+                    event_timeout: editTask.event_timeout,
+                    event_retries: editTask.event_retries,
+                    event_retry_wait: editTask.event_retry_wait,
+                    event_history_limit: editTask.event_history_limit,
+                    event_action_timeout: editTask.event_action_timeout,
+                    event_ai_fallback: editTask.event_ai_fallback,
                 }],
                 execution_mode: editTask.execution_mode,
                 range_start: editTask.range_start,
@@ -1741,6 +2021,13 @@ export default function AccountTasksContent() {
                     </div>
                 </section>
 
+                <CanaryPanel
+                    report={canaryReport}
+                    loading={canaryLoading}
+                    onRefresh={() => void refreshCanaryReport(false)}
+                    isZh={isZh}
+                />
+
                 <section className="space-y-4">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                         <div className="flex flex-wrap items-center gap-3">
@@ -1901,6 +2188,25 @@ export default function AccountTasksContent() {
                             </select>
                         </div>
 
+                        <div className="space-y-2">
+                            <label className={fieldLabelClass}>{language === "zh" ? "执行引擎" : "Engine"}</label>
+                            <select
+                                className={selectClassName}
+                                value={showCreateDialog ? newTask.engine : editTask.engine}
+                                onChange={(e) => {
+                                    const engine = e.target.value as "legacy" | "event";
+                                    if (showCreateDialog) {
+                                        setNewTask({ ...newTask, engine });
+                                    } else {
+                                        setEditTask({ ...editTask, engine });
+                                    }
+                                }}
+                            >
+                                <option value="event">{language === "zh" ? "消息事件驱动" : "Message event"}</option>
+                                <option value="legacy">{language === "zh" ? "动作流水线（兼容）" : "Action pipeline"}</option>
+                            </select>
+                        </div>
+
                         <FormField label={t("action_interval")} htmlFor="task-action-interval">
                             <Input
                                 id="task-action-interval"
@@ -1919,6 +2225,126 @@ export default function AccountTasksContent() {
                                 }}
                             />
                         </FormField>
+
+                        {(showCreateDialog ? newTask.engine : editTask.engine) === "event" ? (
+                            <div className="grid grid-cols-2 gap-2 md:col-span-2">
+                                <FormField label={language === "zh" ? "事件总等待秒数" : "Event timeout"} htmlFor="task-event-timeout">
+                                    <Input
+                                        id="task-event-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="120"
+                                        value={showCreateDialog ? newTask.event_timeout ?? "" : editTask.event_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "事件内部重试" : "Event retries"} htmlFor="task-event-retries">
+                                    <Input
+                                        id="task-event-retries"
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="3"
+                                        value={showCreateDialog ? newTask.event_retries ?? "" : editTask.event_retries ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                                            const raw = cleaned === "" ? undefined : parseInt(cleaned, 10);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_retries: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_retries: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "重试等待秒数" : "Retry wait"} htmlFor="task-event-retry-wait">
+                                    <Input
+                                        id="task-event-retry-wait"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="2"
+                                        value={showCreateDialog ? newTask.event_retry_wait ?? "" : editTask.event_retry_wait ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_retry_wait: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_retry_wait: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "历史救援条数" : "History scan"} htmlFor="task-event-history-limit">
+                                    <Input
+                                        id="task-event-history-limit"
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="0"
+                                        value={showCreateDialog ? newTask.event_history_limit ?? "" : editTask.event_history_limit ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                                            const raw = cleaned === "" ? undefined : parseInt(cleaned, 10);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_history_limit: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_history_limit: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "单动作超时秒数" : "Action timeout"} htmlFor="task-event-action-timeout">
+                                    <Input
+                                        id="task-event-action-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="45"
+                                        value={showCreateDialog ? newTask.event_action_timeout ?? "" : editTask.event_action_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_action_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_action_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <label
+                                    className="flex min-h-10 items-center gap-2 rounded border border-border px-3 text-sm text-foreground md:col-span-2"
+                                    htmlFor="task-event-ai-fallback"
+                                >
+                                    <input
+                                        id="task-event-ai-fallback"
+                                        type="checkbox"
+                                        className="h-4 w-4 accent-primary"
+                                        checked={Boolean(showCreateDialog ? newTask.event_ai_fallback : editTask.event_ai_fallback)}
+                                        onChange={(e) => {
+                                            const val = e.target.checked ? true : undefined;
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_ai_fallback: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_ai_fallback: val });
+                                            }
+                                        }}
+                                    />
+                                    {language === "zh" ? "未知后续交互启用 AI 兜底" : "AI fallback for unknown follow-up"}
+                                </label>
+                            </div>
+                        ) : null}
 
                         <FormField label={t("retry_count")} htmlFor="task-retry-count">
                             <Input
@@ -2204,7 +2630,17 @@ export default function AccountTasksContent() {
                                                 }
                                                 if (selectedType === "ai_vision") {
                                                     const nextActionId = currentActionId === 4 || currentActionId === 6 ? currentActionId : 6;
-                                                    return { action: nextActionId as 4 | 6 };
+                                                    if (nextActionId === 6) {
+                                                        return {
+                                                            action: 6,
+                                                            caption_pattern: currentActionId === 6 ? (currentAction as any).caption_pattern || "" : "",
+                                                            captcha_lengths: currentActionId === 6 ? (currentAction as any).captcha_lengths || [] : [],
+                                                            captcha_charset: currentActionId === 6 ? (currentAction as any).captcha_charset || "" : "",
+                                                            captcha_case: currentActionId === 6 ? (currentAction as any).captcha_case || "preserve" : "preserve",
+                                                            reply_to_message: currentActionId === 6 ? Boolean((currentAction as any).reply_to_message) : false,
+                                                        };
+                                                    }
+                                                    return { action: 4 };
                                                 }
                                                 if (selectedType === "ai_poetry") {
                                                     return { action: 8 };
@@ -2214,6 +2650,16 @@ export default function AccountTasksContent() {
                                                         action: 9,
                                                         keywords: currentKeywords,
                                                         raw_input: currentRawInput,
+                                                        checked_keywords: isSuccessAssertionAction(currentAction) ? currentAction.checked_keywords || [] : [],
+                                                        checked_raw_input: isSuccessAssertionAction(currentAction) ? currentAction.checked_raw_input || "" : "",
+                                                        retry_keywords: isSuccessAssertionAction(currentAction) ? currentAction.retry_keywords || [] : [],
+                                                        retry_raw_input: isSuccessAssertionAction(currentAction) ? currentAction.retry_raw_input || "" : "",
+                                                        fail_keywords: isSuccessAssertionAction(currentAction) ? currentAction.fail_keywords || [] : [],
+                                                        fail_raw_input: isSuccessAssertionAction(currentAction) ? currentAction.fail_raw_input || "" : "",
+                                                        account_fail_keywords: isSuccessAssertionAction(currentAction) ? currentAction.account_fail_keywords || [] : [],
+                                                        account_fail_raw_input: isSuccessAssertionAction(currentAction) ? currentAction.account_fail_raw_input || "" : "",
+                                                        ignore_keywords: isSuccessAssertionAction(currentAction) ? currentAction.ignore_keywords || [] : [],
+                                                        ignore_raw_input: isSuccessAssertionAction(currentAction) ? currentAction.ignore_raw_input || "" : "",
                                                     };
                                                 }
                                                 const nextActionId = currentActionId === 5 || currentActionId === 7 ? currentActionId : 5;
@@ -2279,15 +2725,116 @@ export default function AccountTasksContent() {
                                                     value={action.action === 4 ? "click" : "send"}
                                                     onChange={(e) => {
                                                         const nextActionId = e.target.value === "click" ? 4 : 6;
-                                                        updateCurrentDialogAction(index, (currentAction) => ({
-                                                            ...currentAction,
-                                                            action: nextActionId,
-                                                        }));
+                                                        updateCurrentDialogAction(index, (currentAction) => {
+                                                            if (nextActionId === 6) {
+                                                                return {
+                                                                    action: 6,
+                                                                    caption_pattern: currentAction.action === 6 ? currentAction.caption_pattern || "" : "",
+                                                                    captcha_lengths: currentAction.action === 6 ? currentAction.captcha_lengths || [] : [],
+                                                                    captcha_charset: currentAction.action === 6 ? currentAction.captcha_charset || "" : "",
+                                                                    captcha_case: currentAction.action === 6 ? currentAction.captcha_case || "preserve" : "preserve",
+                                                                    reply_to_message: currentAction.action === 6 ? Boolean(currentAction.reply_to_message) : false,
+                                                                };
+                                                            }
+                                                            return { action: 4 };
+                                                        });
                                                     }}
                                                 >
                                                     <option value="send">{aiVisionSendModeLabel}</option>
                                                     <option value="click">{aiVisionClickModeLabel}</option>
                                                 </select>
+                                            </div>
+                                        ) : null}
+
+                                        {action.action === 6 ? (
+                                            <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_120px]">
+                                                <Input
+                                                    className="h-9 text-xs"
+                                                    placeholder={aiVisionCaptionPatternPlaceholder}
+                                                    value={action.caption_pattern || ""}
+                                                    onChange={(e) => {
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            action: 6,
+                                                            caption_pattern: e.target.value,
+                                                            captcha_lengths: currentAction.action === 6 ? currentAction.captcha_lengths || [] : [],
+                                                            captcha_charset: currentAction.action === 6 ? currentAction.captcha_charset || "" : "",
+                                                            captcha_case: currentAction.action === 6 ? currentAction.captcha_case || "preserve" : "preserve",
+                                                            reply_to_message: currentAction.action === 6 ? Boolean(currentAction.reply_to_message) : false,
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    className="h-9 text-xs"
+                                                    inputMode="numeric"
+                                                    placeholder={aiVisionCaptchaLengthsPlaceholder}
+                                                    value={(action.captcha_lengths || []).join(",")}
+                                                    onChange={(e) => {
+                                                        const lengths = e.target.value
+                                                            .split(/[,#\s]+/)
+                                                            .map((item) => parseInt(item, 10))
+                                                            .filter((item) => Number.isInteger(item) && item > 0);
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            action: 6,
+                                                            caption_pattern: currentAction.action === 6 ? currentAction.caption_pattern || "" : "",
+                                                            captcha_lengths: lengths,
+                                                            captcha_charset: currentAction.action === 6 ? currentAction.captcha_charset || "" : "",
+                                                            captcha_case: currentAction.action === 6 ? currentAction.captcha_case || "preserve" : "preserve",
+                                                            reply_to_message: currentAction.action === 6 ? Boolean(currentAction.reply_to_message) : false,
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    className="h-9 text-xs"
+                                                    placeholder={aiVisionCaptchaCharsetPlaceholder}
+                                                    value={action.captcha_charset || ""}
+                                                    onChange={(e) => {
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            action: 6,
+                                                            caption_pattern: currentAction.action === 6 ? currentAction.caption_pattern || "" : "",
+                                                            captcha_lengths: currentAction.action === 6 ? currentAction.captcha_lengths || [] : [],
+                                                            captcha_charset: e.target.value,
+                                                            captcha_case: currentAction.action === 6 ? currentAction.captcha_case || "preserve" : "preserve",
+                                                            reply_to_message: currentAction.action === 6 ? Boolean(currentAction.reply_to_message) : false,
+                                                        }));
+                                                    }}
+                                                />
+                                                <select
+                                                    className={cn(selectClassName, "h-9 py-0 text-xs")}
+                                                    value={action.captcha_case || "preserve"}
+                                                    onChange={(e) => {
+                                                        const captchaCase = e.target.value as "preserve" | "upper" | "lower";
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            action: 6,
+                                                            caption_pattern: currentAction.action === 6 ? currentAction.caption_pattern || "" : "",
+                                                            captcha_lengths: currentAction.action === 6 ? currentAction.captcha_lengths || [] : [],
+                                                            captcha_charset: currentAction.action === 6 ? currentAction.captcha_charset || "" : "",
+                                                            captcha_case: captchaCase,
+                                                            reply_to_message: currentAction.action === 6 ? Boolean(currentAction.reply_to_message) : false,
+                                                        }));
+                                                    }}
+                                                >
+                                                    <option value="preserve">{isZh ? "保持大小写" : "Preserve case"}</option>
+                                                    <option value="upper">{isZh ? "转大写" : "Uppercase"}</option>
+                                                    <option value="lower">{isZh ? "转小写" : "Lowercase"}</option>
+                                                </select>
+                                                <label className="flex h-9 items-center gap-2 rounded-xl border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-3 text-xs text-[var(--text-secondary)] sm:col-span-2">
+                                                    <input
+                                                        type="checkbox"
+                                                        className="h-4 w-4 accent-primary"
+                                                        checked={Boolean(action.reply_to_message)}
+                                                        onChange={(e) => {
+                                                            updateCurrentDialogAction(index, (currentAction) => ({
+                                                                action: 6,
+                                                                caption_pattern: currentAction.action === 6 ? currentAction.caption_pattern || "" : "",
+                                                                captcha_lengths: currentAction.action === 6 ? currentAction.captcha_lengths || [] : [],
+                                                                captcha_charset: currentAction.action === 6 ? currentAction.captcha_charset || "" : "",
+                                                                captcha_case: currentAction.action === 6 ? currentAction.captcha_case || "preserve" : "preserve",
+                                                                reply_to_message: e.target.checked,
+                                                            }));
+                                                        }}
+                                                    />
+                                                    {isZh ? "回复到验证码图片消息" : "Reply to captcha image"}
+                                                </label>
                                             </div>
                                         ) : null}
 
@@ -2319,19 +2866,92 @@ export default function AccountTasksContent() {
                                         ) : null}
 
                                         {action.action === 9 ? (
-                                            <Input
-                                                placeholder={assertSuccessPlaceholder}
-                                                className="h-10"
-                                                value={action.raw_input}
-                                                onChange={(e) => {
-                                                    const rawInput = e.target.value;
-                                                    updateCurrentDialogAction(index, () => ({
-                                                        action: 9,
-                                                        raw_input: rawInput,
-                                                        keywords: toSuccessKeywords(rawInput),
-                                                    }));
-                                                }}
-                                            />
+                                            <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
+                                                <Input
+                                                    placeholder={assertSuccessPlaceholder}
+                                                    className="h-10"
+                                                    value={action.raw_input}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            raw_input: rawInput,
+                                                            keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    placeholder={language === "zh" ? "已签到关键词，可选，# 分隔" : "Checked keywords, optional, separated by #"}
+                                                    className="h-10"
+                                                    value={action.checked_raw_input || ""}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            checked_raw_input: rawInput,
+                                                            checked_keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    placeholder={language === "zh" ? "重试关键词，可选，# 分隔" : "Retry keywords, optional, separated by #"}
+                                                    className="h-10"
+                                                    value={action.retry_raw_input || ""}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            retry_raw_input: rawInput,
+                                                            retry_keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    placeholder={language === "zh" ? "失败关键词，可选，# 分隔" : "Failure keywords, optional, separated by #"}
+                                                    className="h-10"
+                                                    value={action.fail_raw_input || ""}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            fail_raw_input: rawInput,
+                                                            fail_keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    placeholder={language === "zh" ? "账号异常关键词，可选，# 分隔" : "Account failure keywords, optional, separated by #"}
+                                                    className="h-10"
+                                                    value={action.account_fail_raw_input || ""}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            account_fail_raw_input: rawInput,
+                                                            account_fail_keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                                <Input
+                                                    placeholder={language === "zh" ? "忽略关键词，可选，# 分隔" : "Ignore keywords, optional, separated by #"}
+                                                    className="h-10 lg:col-span-2"
+                                                    value={action.ignore_raw_input || ""}
+                                                    onChange={(e) => {
+                                                        const rawInput = e.target.value;
+                                                        updateCurrentDialogAction(index, (currentAction) => ({
+                                                            ...(isSuccessAssertionAction(currentAction) ? currentAction : { action: 9, keywords: [], raw_input: "" }),
+                                                            action: 9,
+                                                            ignore_raw_input: rawInput,
+                                                            ignore_keywords: toSuccessKeywords(rawInput),
+                                                        }));
+                                                    }}
+                                                />
+                                            </div>
                                         ) : null}
                                     </div>
 
@@ -2471,6 +3091,13 @@ export default function AccountTasksContent() {
                                             <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">
                                                 {diagnostics.completedSteps}/{diagnostics.totalSteps || "-"} {isZh ? "步骤" : "steps"} · {diagnostics.duration}
                                             </div>
+                                            {log.diagnostics ? (
+                                                <div className="mt-2">
+                                                    <StatusBadge tone={diagnosticTone(log.diagnostics.status) as any} className="max-w-full normal-case tracking-normal">
+                                                        {diagnosticLabel(log.diagnostics.status, isZh)}
+                                                    </StatusBadge>
+                                                </div>
+                                            ) : null}
                                         </button>
                                     );
                                 })}
@@ -2529,6 +3156,31 @@ export default function AccountTasksContent() {
                                     {selectedHistoryLog.message ? (
                                         <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-3 text-sm text-[var(--text-secondary)] break-words">
                                             <span className="font-semibold text-[var(--text-primary)]">{isZh ? "机器人消息：" : "Bot message: "}</span>{selectedHistoryLog.message}
+                                        </div>
+                                    ) : null}
+                                    {selectedHistoryLog.diagnostics ? (
+                                        <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-3">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <StatusBadge tone={diagnosticTone(selectedHistoryLog.diagnostics.status) as any} className="normal-case tracking-normal">
+                                                    {diagnosticLabel(selectedHistoryLog.diagnostics.status, isZh)}
+                                                </StatusBadge>
+                                                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                                                    {selectedHistoryLog.diagnostics.summary}
+                                                </span>
+                                            </div>
+                                            <div className="mt-3 grid gap-2 text-xs text-[var(--text-secondary)] md:grid-cols-2">
+                                                {selectedHistoryLog.diagnostics.checks.map((check) => (
+                                                    <div key={check.id} className="flex min-w-0 items-start gap-2 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-3 py-2">
+                                                        <StatusBadge tone={diagnosticTone(check.status) as any} className="shrink-0 normal-case tracking-normal">
+                                                            {check.status}
+                                                        </StatusBadge>
+                                                        <div className="min-w-0">
+                                                            <div className="font-medium text-[var(--text-primary)]">{check.label}</div>
+                                                            {check.detail ? <div className="mt-1 break-words text-[var(--text-tertiary)]">{check.detail}</div> : null}
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
                                         </div>
                                     ) : null}
                                     {selectedHistoryLog.flow_items && selectedHistoryLog.flow_items.length > 0 ? (
