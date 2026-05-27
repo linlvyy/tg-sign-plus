@@ -95,6 +95,7 @@ class SignTaskService:
     def get_task_history_logs(
         self, task_name: str, account_name: str, limit: int = 20
     ) -> List[Dict[str, Any]]:
+        self._history_service.bind_tasks_cache(self._tasks_cache_ref["value"])
         return self._history_service.get_task_history_logs(
             task_name=task_name,
             account_name=account_name,
@@ -178,6 +179,7 @@ class SignTaskService:
         execution_mode: str = "fixed",
         range_start: str = "",
         range_end: str = "",
+        engine: str = "event",
     ) -> Dict[str, Any]:
         return self._management_service.create_task(
             task_name=task_name,
@@ -190,6 +192,7 @@ class SignTaskService:
             execution_mode=execution_mode,
             range_start=range_start,
             range_end=range_end,
+            engine=engine,
         )
 
     async def create_task_and_sync(
@@ -204,6 +207,7 @@ class SignTaskService:
         execution_mode: str = "fixed",
         range_start: str = "",
         range_end: str = "",
+        engine: str = "event",
     ) -> Dict[str, Any]:
         return await self._management_service.create_task_and_sync(
             task_name=task_name,
@@ -216,6 +220,7 @@ class SignTaskService:
             execution_mode=execution_mode,
             range_start=range_start,
             range_end=range_end,
+            engine=engine,
         )
 
     def update_task(
@@ -230,6 +235,7 @@ class SignTaskService:
         execution_mode: Optional[str] = None,
         range_start: Optional[str] = None,
         range_end: Optional[str] = None,
+        engine: Optional[str] = None,
     ) -> Dict[str, Any]:
         return self._management_service.update_task(
             task_name=task_name,
@@ -242,6 +248,7 @@ class SignTaskService:
             execution_mode=execution_mode,
             range_start=range_start,
             range_end=range_end,
+            engine=engine,
         )
 
     async def update_task_and_sync(
@@ -256,6 +263,7 @@ class SignTaskService:
         execution_mode: Optional[str] = None,
         range_start: Optional[str] = None,
         range_end: Optional[str] = None,
+        engine: Optional[str] = None,
     ) -> Dict[str, Any]:
         return await self._management_service.update_task_and_sync(
             task_name=task_name,
@@ -268,6 +276,7 @@ class SignTaskService:
             execution_mode=execution_mode,
             range_start=range_start,
             range_end=range_end,
+            engine=engine,
         )
 
     async def set_task_enabled_and_sync(

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
+from backend.services.sign_task_event_presets import normalize_event_task_config
 from backend.utils.storage import is_writable_dir
 
 settings = get_settings()
@@ -102,6 +103,7 @@ class ConfigService:
             "random_seconds": task.get("random_seconds", 0),
             "sign_interval": task.get("sign_interval", 1),
             "retry_count": task.get("retry_count", 0),
+            "engine": task.get("engine", "event"),
             "chats": task.get("chats", []),
             "execution_mode": task.get("execution_mode", "fixed"),
             "range_start": task.get("range_start", ""),
@@ -117,6 +119,7 @@ class ConfigService:
         if not account_name:
             return False
         try:
+            config = normalize_event_task_config(config)
             self._sign_config_repo.save_config(task_name, account_name, config)
             return True
         except Exception:
@@ -187,7 +190,7 @@ class ConfigService:
             # 确定任务名称
             final_task_name = task_name or data.get("task_name", "imported_task")
 
-            config = data["config"]
+            config = dict(data["config"])
             if account_name:
                 config["account_name"] = account_name
 

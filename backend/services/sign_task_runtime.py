@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 from tg_signer.ai_tools import OpenAIConfig
 from tg_signer.core import UserSigner
 
+from backend.services.sign_task_event_presets import normalize_event_task_config
 from backend.services.task_flow_logger import TaskFlowLogger
 
 
@@ -121,6 +122,12 @@ class BackendUserSigner(UserSigner):
         else:
             payload = dict(payload)
             payload.pop("name", None)
+            normalized_payload = normalize_event_task_config(payload)
+            if normalized_payload != payload:
+                self._get_config_repo().save_config(
+                    self.task_name, self._account, normalized_payload
+                )
+                payload = normalized_payload
             config, from_old = cfg_cls.load(payload)
             if from_old:
                 self.write_config(config)
@@ -140,6 +147,7 @@ class BackendUserSigner(UserSigner):
         if not isinstance(payload, dict):
             raise ValueError("任务配置必须为 JSON 对象")
         payload["account_name"] = self._account
+        payload = normalize_event_task_config(payload)
         self._get_config_repo().save_config(self.task_name, self._account, payload)
         self.config = None
 

@@ -6,6 +6,8 @@ from zoneinfo import ZoneInfo
 
 from backend.core.config import get_settings
 from backend.services.config import get_config_service
+from backend.services.sign_task_diagnostics import analyze_sign_task_run
+from backend.services.sign_task_event_presets import normalize_event_task_config
 
 settings = get_settings()
 
@@ -125,6 +127,8 @@ class SignTaskHistoryService:
             flow_logs = item.get("flow_logs")
             if not isinstance(flow_logs, list):
                 flow_logs = []
+            flow_items = self._normalize_flow_items(item.get("flow_items"))
+            task_config = self._find_task_config(task_name, account_name)
 
             result.append(
                 {
@@ -132,12 +136,50 @@ class SignTaskHistoryService:
                     "success": bool(item.get("success", False)),
                     "message": item.get("message", "") or "",
                     "flow_logs": [str(line) for line in flow_logs],
-                    "flow_items": self._normalize_flow_items(item.get("flow_items")),
+                    "flow_items": flow_items,
                     "flow_truncated": bool(item.get("flow_truncated", False)),
                     "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
+                    "diagnostics": analyze_sign_task_run(
+                        flow_items=flow_items,
+                        task_config=task_config,
+                        success=bool(item.get("success", False)),
+                    ),
                 }
             )
         return result
+
+    def _find_task_config(self, task_name: str, account_name: str) -> Optional[Dict[str, Any]]:
+        def normalize(config: Dict[str, Any]) -> Dict[str, Any]:
+            try:
+                return normalize_event_task_config(config)
+            except Exception:
+                return config
+
+        tasks = self._tasks_cache_ref or []
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            if task.get("name") != task_name:
+                continue
+            if account_name and task.get("account_name") != account_name:
+                continue
+            config = task.get("config")
+            if isinstance(config, dict):
+                return normalize(config)
+            if isinstance(task.get("chats"), list):
+                return normalize({
+                    "engine": task.get("engine", "event"),
+                    "chats": task.get("chats") or [],
+                })
+        get_config = getattr(self._config_repo, "get_config", None)
+        if callable(get_config):
+            task = get_config(task_name, account_name)
+            if isinstance(task, dict):
+                return normalize({
+                    "engine": task.get("engine", "event"),
+                    "chats": task.get("chats") or [],
+                })
+        return None
 
     def get_account_history_logs(self, account_name: str) -> List[Dict[str, Any]]:
         self.prune_expired_history_logs()

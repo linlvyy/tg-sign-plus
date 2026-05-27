@@ -259,6 +259,7 @@ class DatabaseSignTaskConfigRepo(SignTaskConfigRepo):
             "random_seconds": config.get("random_seconds", 0),
             "sign_interval": config.get("sign_interval", 1),
             "retry_count": config.get("retry_count", 0),
+            "engine": config.get("engine", "event"),
             "chats": config.get("chats", []),
             "enabled": row.enabled,
             "last_run": config.get("last_run"),

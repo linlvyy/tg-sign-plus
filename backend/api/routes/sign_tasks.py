@@ -24,6 +24,9 @@ from sqlalchemy.orm import Session
 from backend.core.auth import get_current_user, verify_token
 from backend.core.database import get_db
 from backend.core.validators import ValidationError, validate_account_name
+from backend.repositories.sign_task_config_repo import get_sign_task_config_repo
+from backend.repositories.sign_task_history_repo import get_sign_task_history_repo
+from backend.services.sign_task_canary import generate_canary_report
 from backend.services.sign_tasks import get_sign_task_service
 
 router = APIRouter()
@@ -90,6 +93,12 @@ class ChatConfig(BaseModel):
     actions: List[Dict[str, Any]] = Field(..., description="动作列表")
     delete_after: Optional[int] = Field(None, ge=0, description="删除延迟（秒）")
     action_interval: int = Field(1, ge=0, description="动作间隔（秒）")
+    event_timeout: Optional[float] = Field(None, ge=1, description="事件引擎总等待秒数")
+    event_retries: Optional[int] = Field(None, ge=0, description="事件引擎内部重试次数")
+    event_retry_wait: Optional[float] = Field(None, ge=0, description="事件引擎重试等待秒数")
+    event_history_limit: Optional[int] = Field(None, ge=0, description="事件引擎历史救援扫描条数")
+    event_action_timeout: Optional[float] = Field(None, ge=1, description="事件引擎单个响应动作超时秒数")
+    event_ai_fallback: Optional[bool] = Field(None, description="事件引擎未知交互 AI 兜底")
 
     @validator("actions")
     def validate_actions(cls, actions):
@@ -105,6 +114,27 @@ class ChatConfig(BaseModel):
             if not normalized_keywords:
                 raise ValueError("成功判定动作至少需要一个关键字")
             action["keywords"] = normalized_keywords
+            for field_name in (
+                "checked_keywords",
+                "retry_keywords",
+                "fail_keywords",
+                "account_fail_keywords",
+                "ignore_keywords",
+            ):
+                values = action.get(field_name)
+                if values is None:
+                    continue
+                if isinstance(values, str):
+                    values = [item.strip() for item in values.split("#")]
+                if not isinstance(values, list):
+                    raise ValueError(f"成功判定动作的 {field_name} 必须为数组")
+                normalized_values = [
+                    str(item).strip() for item in values if str(item).strip()
+                ]
+                if normalized_values:
+                    action[field_name] = normalized_values
+                else:
+                    action.pop(field_name, None)
         return actions
 
 
@@ -120,6 +150,7 @@ class SignTaskCreate(BaseModel):
         None, ge=0, description="签到间隔秒数，留空使用全局配置或随机 1-120 秒"
     )
     retry_count: int = Field(0, ge=0, description="失败重试次数")
+    engine: Optional[str] = Field("event", description="执行引擎: legacy/event")
     execution_mode: Optional[str] = Field("fixed", description="执行模式: fixed/range")
     range_start: Optional[str] = Field(None, description="随机范围开始时间")
     range_end: Optional[str] = Field(None, description="随机范围结束时间")
@@ -145,6 +176,7 @@ class SignTaskUpdate(BaseModel):
     random_seconds: Optional[int] = Field(None, ge=0, description="随机延迟秒数")
     sign_interval: Optional[int] = Field(None, ge=0, description="签到间隔秒数")
     retry_count: Optional[int] = Field(None, ge=0, description="失败重试次数")
+    engine: Optional[str] = Field(None, description="执行引擎: legacy/event")
     execution_mode: Optional[str] = Field(None, description="执行模式: fixed/range")
     range_start: Optional[str] = Field(None, description="随机范围开始时间")
     range_end: Optional[str] = Field(None, description="随机范围结束时间")
@@ -175,6 +207,7 @@ class SignTaskOut(BaseModel):
     random_seconds: int
     sign_interval: int
     retry_count: int = 0
+    engine: Optional[str] = "event"
     enabled: bool
     last_run: Optional[LastRunInfo] = None
     execution_mode: Optional[str] = "fixed"
@@ -237,6 +270,20 @@ class TaskHistoryFlowItem(BaseModel):
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
+class TaskHistoryDiagnosticCheck(BaseModel):
+    id: str = ""
+    label: str = ""
+    status: str = "unknown"
+    detail: str = ""
+
+
+class TaskHistoryDiagnostics(BaseModel):
+    status: str = "unknown"
+    summary: str = ""
+    checks: List[TaskHistoryDiagnosticCheck] = Field(default_factory=list)
+    milestones: Dict[str, Any] = Field(default_factory=dict)
+
+
 class TaskHistoryItem(BaseModel):
     time: str
     success: bool
@@ -245,6 +292,7 @@ class TaskHistoryItem(BaseModel):
     flow_items: List[TaskHistoryFlowItem] = Field(default_factory=list)
     flow_truncated: bool = False
     flow_line_count: int = 0
+    diagnostics: Optional[TaskHistoryDiagnostics] = None
 
 
 class SchedulerSignTaskStatus(BaseModel):
@@ -298,6 +346,33 @@ def get_scheduler_status_api(
     return get_scheduler_status(account_name=account_name)
 
 
+@router.get("/canary/report")
+def get_canary_report_api(
+    account_name: Optional[str] = None,
+    history_limit: int = Query(1, ge=1, le=20),
+    max_age_hours: float = Query(36.0, ge=0),
+    current_user=Depends(get_current_user),
+):
+    """汇总 peach、喵了个咪、厂妹的事件引擎 canary 诊断。"""
+
+    account_name = _valid_optional_account_name(account_name)
+    from backend.core.config import get_settings
+
+    settings = get_settings()
+    return generate_canary_report(
+        config_repo=get_sign_task_config_repo(),
+        history_repo=get_sign_task_history_repo(),
+        account_name=account_name,
+        history_limit=history_limit,
+        max_age_hours=max_age_hours,
+        source={
+            "database_url": settings.database_url,
+            "data_dir": str(settings.data_dir) if settings.data_dir else "",
+            "resolved_base_dir": str(settings.resolve_base_dir()),
+        },
+    )
+
+
 @router.post("", response_model=SignTaskOut, status_code=status.HTTP_201_CREATED)
 async def create_sign_task(
     payload: SignTaskCreate,
@@ -318,6 +393,7 @@ async def create_sign_task(
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
             retry_count=payload.retry_count,
+            engine=payload.engine,
             execution_mode=payload.execution_mode,
             range_start=payload.range_start,
             range_end=payload.range_end,
@@ -368,6 +444,7 @@ async def update_sign_task(
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
             retry_count=payload.retry_count,
+            engine=payload.engine,
             account_name=account_name or existing.get("account_name"),
             execution_mode=payload.execution_mode,
             range_start=payload.range_start,

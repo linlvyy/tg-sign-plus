@@ -56,6 +56,8 @@ class SignTaskExecutor:
     def task_requires_updates(task_config: Dict[str, Any] | None) -> bool:
         if not isinstance(task_config, dict):
             return True
+        if task_config.get("engine", "event") == "event":
+            return True
         chats = task_config.get("chats")
         if not isinstance(chats, list):
             return True
@@ -76,6 +78,113 @@ class SignTaskExecutor:
                 if action_id in response_actions:
                     return True
         return False
+
+    @staticmethod
+    def _read_int_env(name: str, default: int, minimum: int = 0) -> int:
+        try:
+            return max(int(os.getenv(name, default) or default), minimum)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _read_float_env(name: str, default: float, minimum: float = 0.0) -> float:
+        try:
+            return max(float(os.getenv(name, default) or default), minimum)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def task_timeout_seconds(cls, task_config: Dict[str, Any] | None) -> int:
+        configured_timeout = cls._read_int_env("SIGN_TASK_RUN_TIMEOUT", 180, minimum=30)
+        if not isinstance(task_config, dict) or task_config.get("engine", "event") != "event":
+            return configured_timeout
+
+        chats = task_config.get("chats")
+        if not isinstance(chats, list) or not chats:
+            return configured_timeout
+
+        default_event_timeout = cls._read_float_env("TG_EVENT_ENGINE_TIMEOUT", 120.0, minimum=1.0)
+        event_budget = 0.0
+        for chat in chats:
+            if not isinstance(chat, dict):
+                event_budget += default_event_timeout
+                continue
+            try:
+                event_budget += max(float(chat.get("event_timeout") or default_event_timeout), 1.0)
+            except (TypeError, ValueError):
+                event_budget += default_event_timeout
+
+        try:
+            sign_interval = max(float(task_config.get("sign_interval", 0) or 0), 0.0)
+        except (TypeError, ValueError):
+            sign_interval = 0.0
+        if len(chats) > 1:
+            event_budget += sign_interval * (len(chats) - 1)
+
+        overhead = cls._read_int_env("SIGN_TASK_RUN_TIMEOUT_OVERHEAD", 90, minimum=30)
+        return max(configured_timeout, int(event_budget + overhead))
+
+    @classmethod
+    def task_runtime_config_meta(cls, task_config: Dict[str, Any] | None) -> Dict[str, Any]:
+        if not isinstance(task_config, dict):
+            return {"engine": "event", "chat_count": 0}
+        chats = task_config.get("chats") if isinstance(task_config.get("chats"), list) else []
+        engine = str(task_config.get("engine") or "event")
+        meta: Dict[str, Any] = {
+            "engine": engine,
+            "chat_count": len(chats),
+        }
+        if engine != "event":
+            return meta
+
+        event_timeouts: list[float] = []
+        event_retries: list[int] = []
+        event_history_limits: list[int] = []
+        event_action_timeouts: list[float] = []
+        known_targets: list[str] = []
+        for chat in chats:
+            if not isinstance(chat, dict):
+                continue
+            identity = " ".join(
+                str(chat.get(key) or "").lower()
+                for key in ("chat_id", "name", "username")
+            )
+            if "8060839337" in identity or "peach_emby_bot" in identity or "peach" in identity:
+                known_targets.append("peach")
+            elif "7516512581" in identity or "gymeowfly_bot" in identity or "喵了个咪" in identity or "飞了个喵" in identity:
+                known_targets.append("meow")
+            elif "1429576125" in identity or "embypublicbot" in identity or "厂妹" in identity:
+                known_targets.append("emby_public")
+
+            for source, target, caster in (
+                ("event_timeout", event_timeouts, float),
+                ("event_retries", event_retries, int),
+                ("event_history_limit", event_history_limits, int),
+                ("event_action_timeout", event_action_timeouts, float),
+            ):
+                value = chat.get(source)
+                if value is None:
+                    continue
+                try:
+                    target.append(caster(value))
+                except (TypeError, ValueError):
+                    continue
+
+        meta.update(
+            {
+                "event_chat_count": sum(1 for chat in chats if isinstance(chat, dict)),
+                "known_targets": ",".join(sorted(set(known_targets))),
+            }
+        )
+        if event_timeouts:
+            meta["max_event_timeout"] = max(event_timeouts)
+        if event_retries:
+            meta["max_event_retries"] = max(event_retries)
+        if event_history_limits:
+            meta["max_event_history_limit"] = max(event_history_limits)
+        if event_action_timeouts:
+            meta["max_event_action_timeout"] = max(event_action_timeouts)
+        return meta
 
     @staticmethod
     def _extract_last_reply(final_logs: List[str]) -> str:
@@ -109,6 +218,25 @@ class SignTaskExecutor:
             if last_reply:
                 break
         return last_reply
+
+    @staticmethod
+    def _failure_meta(
+        exc: Exception,
+        *,
+        task_attempt: int,
+        total_attempts: int,
+        retryable: bool,
+        timeout_seconds: int | None,
+    ) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {
+            "error_type": type(exc).__name__,
+            "retryable": retryable,
+            "attempt": task_attempt,
+            "total_attempts": total_attempts,
+        }
+        if timeout_seconds is not None:
+            meta["timeout_seconds"] = timeout_seconds
+        return meta
 
     async def run_task_with_logs(self, account_name: str, task_name: str) -> Dict[str, Any]:
         task_key = (account_name, task_name)
@@ -144,6 +272,10 @@ class SignTaskExecutor:
         error_msg = ""
         output_str = ""
         signer = None
+        configured_retry_count = 0
+        total_attempts = 1
+        current_task_attempt = 0
+        task_timeout_seconds: int | None = None
 
         try:
             async with account_lock:
@@ -207,12 +339,19 @@ class SignTaskExecutor:
                     and not disable_sign_task_updates
                 )
                 signer_no_updates = not requires_updates
-                configured_retry_count = 0
                 if isinstance(task_cfg, dict):
                     try:
                         configured_retry_count = max(int(task_cfg.get("retry_count", 0) or 0), 0)
                     except (TypeError, ValueError):
                         configured_retry_count = 0
+                runtime_meta = self.task_runtime_config_meta(task_cfg)
+                flow_logger.append(
+                    f"运行配置: engine={runtime_meta.get('engine')} chats={runtime_meta.get('chat_count')}",
+                    level="info",
+                    stage="task",
+                    event="task_runtime_config",
+                    meta=runtime_meta,
+                )
                 flow_logger.append(
                     f"消息更新监听: {'开启' if requires_updates else '关闭'}",
                     level="info",
@@ -241,17 +380,21 @@ class SignTaskExecutor:
                     no_updates=signer_no_updates,
                 )
 
-                try:
-                    task_timeout_seconds = int(os.getenv("SIGN_TASK_RUN_TIMEOUT", "180") or "180")
-                except (TypeError, ValueError):
-                    task_timeout_seconds = 180
-                task_timeout_seconds = max(task_timeout_seconds, 30)
+                task_timeout_seconds = self.task_timeout_seconds(task_cfg)
+                flow_logger.append(
+                    f"单次执行总超时: {task_timeout_seconds} 秒",
+                    level="info",
+                    stage="task",
+                    event="task_timeout_config",
+                    meta={"timeout_seconds": task_timeout_seconds},
+                )
 
                 async with get_global_semaphore():
                     max_session_retries = 3
                     total_attempts = configured_retry_count + 1
                     last_exception = None
                     for task_attempt in range(1, total_attempts + 1):
+                        current_task_attempt = task_attempt
                         if task_attempt > 1:
                             flow_logger.append(
                                 f"开始第 {task_attempt}/{total_attempts} 次重试",
@@ -294,7 +437,13 @@ class SignTaskExecutor:
                                 level="warning",
                                 stage="task",
                                 event="task_retry_scheduled",
-                                meta={"attempt": task_attempt, "total_attempts": total_attempts, "error": str(e)},
+                                meta={
+                                    "attempt": task_attempt,
+                                    "total_attempts": total_attempts,
+                                    "error": str(e),
+                                    "error_type": type(e).__name__,
+                                    "retryable": True,
+                                },
                             )
                             await asyncio.sleep(2)
                             continue
@@ -305,19 +454,35 @@ class SignTaskExecutor:
                     level="success",
                     stage="result",
                     event="task_completed",
-                    meta={"task_name": task_name, "account_name": account_name},
+                    meta={
+                        "task_name": task_name,
+                        "account_name": account_name,
+                        "attempt": current_task_attempt,
+                        "total_attempts": total_attempts,
+                    },
                 )
                 await asyncio.sleep(2)
 
         except Exception as e:
             error_detail = str(e) or type(e).__name__
             error_msg = f"任务执行出错: {error_detail}"
+            is_retryable_business_error = isinstance(e, BusinessRetryableError)
             flow_logger.append(
                 error_msg,
                 level="error",
                 stage="result",
                 event="task_failed",
-                meta={"task_name": task_name, "account_name": account_name},
+                meta={
+                    "task_name": task_name,
+                    "account_name": account_name,
+                    **self._failure_meta(
+                        e,
+                        task_attempt=current_task_attempt,
+                        total_attempts=total_attempts,
+                        retryable=is_retryable_business_error,
+                        timeout_seconds=task_timeout_seconds,
+                    ),
+                },
             )
             traceback.print_exc()
             logging.getLogger("backend").error(error_msg)
