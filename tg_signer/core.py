@@ -27,15 +27,9 @@ from tg_signer.config import (
     ActionT,
     AssertSuccessByTextAction,
     BaseJSONConfig,
-    ChooseOptionByImageAction,
-    ClickButtonByCalculationProblemAction,
-    ClickButtonByPoetryFillAction,
-    ClickKeyboardByTextAction,
     HttpCallback,
     MatchConfig,
     MonitorConfig,
-    ReplyByCalculationProblemAction,
-    ReplyByImageRecognitionAction,
     SendDiceAction,
     SendTextAction,
     SignChatV3,
@@ -44,25 +38,17 @@ from tg_signer.config import (
     UDPForward,
 )
 
-from .ai_actions import (
-    choose_option_by_image,
-    click_button_by_calculation_problem,
-    click_button_by_poetry_fill,
-    reply_by_calculation_problem,
-    reply_by_image_recognition,
-)
 from .ai_tools import AITools, OpenAIConfigManager
 from .callback_actions import request_callback_answer
 from .client_manager import Client, close_client_by_name, get_api_config, get_client, get_proxy
 from .event_runner import EventRunStatus, SignEventRunner
-from .keyboard_actions import click_keyboard_by_text
 from .message_helpers import readable_chat, readable_message
 from .message_receivers import handle_edited_message, handle_incoming_message, store_incoming_message
 from .notification.server_chan import sc_send
 from .scheduled_messages import get_scheduled_messages, schedule_messages
 from .text_cleaners import clean_text_for_match, clean_text_for_send
 from .utils import UserInput, print_to_user
-from .wait_dispatcher import BusinessRetryableError, dispatch_action_on_message, wait_for_action
+from .wait_dispatcher import BusinessRetryableError
 
 # Monkeypatch sqlite3.connect to increase default timeout
 _original_sqlite3_connect = sqlite3.connect
@@ -625,7 +611,6 @@ class UserSignerWorkerContext(BaseModel):
     last_callback_texts: dict  # 最近一次按钮弹窗文案, int -> str
     event_runners: dict  # 事件驱动签到 runner, int -> SignEventRunner
     event_tasks: set  # 事件驱动消息处理任务
-    waiting_message: Optional[Message] = None  # 正在处理的消息
 
 
 class UserSigner(BaseUserWorker[SignConfigV3]):
@@ -642,7 +627,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             last_callback_texts={},
             event_runners={},
             event_tasks=set(),
-            waiting_message=None,
         )
 
     def _load_chat_cache(self) -> List[dict]:
@@ -996,49 +980,32 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             event="chat_execution_started",
             meta={"chat_id": chat.chat_id, "chat_name": getattr(chat, "name", "")},
         )
-        if getattr(self.config, "engine", "event") == "event":
-            runner = SignEventRunner(
-                chat=chat,
-                app=self.app,
-                log=self.log,
-                send_message=self.send_message,
-                send_dice=self.send_dice,
-                request_callback_answer=self.request_callback_answer,
-                get_ai_tools=self.get_ai_tools,
+        runner = SignEventRunner(
+            chat=chat,
+            app=self.app,
+            log=self.log,
+            send_message=self.send_message,
+            send_dice=self.send_dice,
+            request_callback_answer=self.request_callback_answer,
+            get_ai_tools=self.get_ai_tools,
+        )
+        self.context.event_runners[chat.chat_id] = runner
+        try:
+            result = await runner.run()
+        finally:
+            self.context.event_runners.pop(chat.chat_id, None)
+            await self._drain_event_tasks()
+        if result.status not in (EventRunStatus.SUCCESS, EventRunStatus.CHECKED):
+            raise BusinessRetryableError(
+                f"Event engine failed. chat_id={chat.chat_id}, status={result.status}, message={result.message}"
             )
-            self.context.event_runners[chat.chat_id] = runner
-            try:
-                result = await runner.run()
-            finally:
-                self.context.event_runners.pop(chat.chat_id, None)
-                await self._drain_event_tasks()
-            if result.status not in (EventRunStatus.SUCCESS, EventRunStatus.CHECKED):
-                raise BusinessRetryableError(
-                    f"Event engine failed. chat_id={chat.chat_id}, status={result.status}, message={result.message}"
-                )
-            self.log(
-                f"事件引擎处理完成: {result.status}",
-                stage="action",
-                event="event_engine_completed",
-                meta={"chat_id": chat.chat_id, "status": result.status, "message": result.message},
-            )
-            return None
-        for index, action in enumerate(chat.actions, start=1):
-            self.log(
-                f"等待处理动作 #{index}: {action}",
-                stage="action",
-                event="action_started",
-                meta={"chat_id": chat.chat_id, "action_index": index, "action": str(action)},
-            )
-            await self.wait_for(chat, action)
-            self.log(
-                f"处理完成 #{index}: {action}",
-                stage="action",
-                event="action_completed",
-                meta={"chat_id": chat.chat_id, "action_index": index, "action": str(action)},
-            )
-            self.context.waiting_message = None
-            await asyncio.sleep(chat.action_interval)
+        self.log(
+            f"事件引擎处理完成: {result.status}",
+            stage="action",
+            event="event_engine_completed",
+            meta={"chat_id": chat.chat_id, "status": result.status, "message": result.message},
+        )
+        return None
 
     async def run(
         self, num_of_dialogs=20, only_once: bool = False, force_rerun: bool = False
@@ -1249,100 +1216,6 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
     def _clean_text_for_send(self, text: str) -> str:
         return clean_text_for_send(text)
-
-    async def _click_keyboard_by_text(
-        self, action: ClickKeyboardByTextAction, message: Message
-    ):
-        return await click_keyboard_by_text(
-            action=action,
-            message=message,
-            app=self.app,
-            log=self.log,
-            send_message=self.send_message,
-            request_callback_answer=self.request_callback_answer,
-            clean_text_for_match=self._clean_text_for_match,
-        )
-
-    async def _reply_by_calculation_problem(
-        self, action: ReplyByCalculationProblemAction, message
-    ):
-        return await reply_by_calculation_problem(
-            message=message,
-            log=self.log,
-            send_message=self.send_message,
-            get_ai_tools=self.get_ai_tools,
-        )
-
-    async def _reply_by_image_recognition(
-        self, action: ReplyByImageRecognitionAction, message
-    ):
-        return await reply_by_image_recognition(
-            message=message,
-            app=self.app,
-            log=self.log,
-            send_message=self.send_message,
-            clean_text_for_send=self._clean_text_for_send,
-            get_ai_tools=self.get_ai_tools,
-            result_text_store=self.context.last_callback_texts,
-        )
-
-    async def _click_button_by_calculation_problem(
-        self, action: ClickButtonByCalculationProblemAction, message
-    ):
-        return await click_button_by_calculation_problem(
-            message=message,
-            log=self.log,
-            click_keyboard_by_text=self._click_keyboard_by_text,
-            get_ai_tools=self.get_ai_tools,
-        )
-
-    async def _click_button_by_poetry_fill(
-        self, action: ClickButtonByPoetryFillAction, message
-    ):
-        return await click_button_by_poetry_fill(
-            message=message,
-            app=self.app,
-            chat_messages=self.context.chat_messages,
-            log=self.log,
-            clean_text_for_send=self._clean_text_for_send,
-            click_keyboard_by_text=self._click_keyboard_by_text,
-            get_ai_tools=self.get_ai_tools,
-        )
-
-    async def _choose_option_by_image(self, action: ChooseOptionByImageAction, message):
-        return await choose_option_by_image(
-            message=message,
-            app=self.app,
-            log=self.log,
-            request_callback_answer=self.request_callback_answer,
-            get_ai_tools=self.get_ai_tools,
-        )
-
-    async def _dispatch_action_on_message(self, action: ActionT, message: Message) -> bool:
-        return await dispatch_action_on_message(
-            action=action,
-            message=message,
-            click_keyboard_by_text=self._click_keyboard_by_text,
-            reply_by_calculation_problem=self._reply_by_calculation_problem,
-            choose_option_by_image=self._choose_option_by_image,
-            reply_by_image_recognition=self._reply_by_image_recognition,
-            click_button_by_calculation_problem=self._click_button_by_calculation_problem,
-            click_button_by_poetry_fill=self._click_button_by_poetry_fill,
-        )
-
-    async def wait_for(self, chat: SignChatV3, action: ActionT, timeout=15):
-        return await wait_for_action(
-            chat=chat,
-            action=action,
-            timeout=timeout,
-            app=self.app,
-            context=self.context,
-            log=self.log,
-            send_message=self.send_message,
-            send_dice=self.send_dice,
-            dispatch_action=self._dispatch_action_on_message,
-            clean_text_for_match=self._clean_text_for_match,
-        )
 
     async def request_callback_answer(
         self,

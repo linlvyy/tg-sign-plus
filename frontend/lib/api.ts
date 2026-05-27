@@ -536,7 +536,6 @@ export interface SignTaskChat {
   name: string;
   actions: SignTaskAction[];
   delete_after?: number;
-  action_interval: number;
   event_timeout?: number;
   event_retries?: number;
   event_retry_wait?: number;
@@ -559,7 +558,7 @@ export interface SignTask {
   random_seconds: number;
   sign_interval: number;
   retry_count: number;
-  engine?: "legacy" | "event";
+  engine?: "event";
   enabled: boolean;
   last_run?: LastRunInfo | null;
   execution_mode?: "fixed" | "range";
@@ -576,7 +575,6 @@ export interface CreateSignTaskRequest {
   random_seconds?: number;
   sign_interval?: number;
   retry_count?: number;
-  engine?: "legacy" | "event";
   execution_mode?: "fixed" | "range";
   range_start?: string;
   range_end?: string;
@@ -588,7 +586,6 @@ export interface UpdateSignTaskRequest {
   random_seconds?: number;
   sign_interval?: number;
   retry_count?: number;
-  engine?: "legacy" | "event";
   execution_mode?: "fixed" | "range";
   range_start?: string;
   range_end?: string;
@@ -827,6 +824,20 @@ export const getSignTaskCanaryReport = (
   if (maxAgeHours !== undefined) params.append("max_age_hours", String(maxAgeHours));
   return request<SignTaskCanaryReport>(
     `/sign-tasks/canary/report?${params.toString()}`
+  );
+};
+
+export const getSignTaskEventEngineReport = (
+  accountName?: string,
+  historyLimit: number = 1,
+  maxAgeHours?: number
+) => {
+  const params = new URLSearchParams();
+  if (accountName) params.append("account_name", accountName);
+  params.append("history_limit", String(historyLimit));
+  if (maxAgeHours !== undefined) params.append("max_age_hours", String(maxAgeHours));
+  return request<SignTaskCanaryReport>(
+    `/sign-tasks/event-engine/report?${params.toString()}`
   );
 };
 

@@ -13,7 +13,7 @@ from typing import (
     Union,
 )
 
-from pydantic import AnyHttpUrl, BaseModel, ValidationError
+from pydantic import AnyHttpUrl, BaseModel, ValidationError, validator
 from pyrogram.types import Chat, Message
 from typing_extensions import Self, TypeAlias
 
@@ -314,7 +314,6 @@ class SignChatV3(BaseJSONConfig):
     name: Optional[str] = None
     delete_after: Optional[int] = None
     actions: List[ActionT]
-    action_interval: float = 1  # actions的间隔时间，单位秒
     event_timeout: Optional[float] = None  # 事件引擎总等待秒数
     event_retries: Optional[int] = None  # 事件引擎内部重试次数
     event_retry_wait: Optional[float] = None  # 事件引擎重试入口动作前等待秒数
@@ -326,8 +325,7 @@ class SignChatV3(BaseJSONConfig):
         return (
             f"SignChatV3(chat_id={self.chat_id}, "
             f"delete_after={self.delete_after}, "
-            f"actions=[{len(self.actions)} actions]),"
-            f"action_interval={self.action_interval}"
+            f"actions=[{len(self.actions)} actions])"
         )
 
     def __str__(self) -> str:
@@ -437,7 +435,11 @@ class SignConfigV3(BaseJSONConfig):
     random_seconds: int = 0
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
     retry_count: int = 0  # 失败重试次数
-    engine: Literal["legacy", "event"] = "event"  # 执行引擎：event=消息事件驱动，legacy=动作流水线兼容模式
+    engine: Literal["event"] = "event"  # 执行引擎：消息事件驱动
+
+    @validator("engine", pre=True, always=True)
+    def force_event_engine(cls, _value):
+        return "event"
 
     @property
     def requires_ai(self) -> bool:
@@ -445,9 +447,7 @@ class SignConfigV3(BaseJSONConfig):
 
     @property
     def requires_updates(self) -> bool:
-        if self.engine == "event":
-            return True
-        return any(chat.requires_updates for chat in self.chats)
+        return True
 
 
 MatchRuleT: TypeAlias = Literal["exact", "contains", "regex", "all"]

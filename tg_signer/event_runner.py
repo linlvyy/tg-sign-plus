@@ -878,8 +878,6 @@ class SignEventRunner:
         for index, action in enumerate(self.spec.send_actions, start=1):
             if retry and index == 1:
                 await asyncio.sleep(self.retry_wait)
-            if index > 1:
-                await asyncio.sleep(max(float(getattr(self.chat, "action_interval", 1) or 0), 0))
             try:
                 if isinstance(action, SendTextAction):
                     self.log(
@@ -960,7 +958,6 @@ class SignEventRunner:
             action = self._current_response_action()
             if not isinstance(action, (SendTextAction, SendDiceAction)):
                 return
-            await asyncio.sleep(max(float(getattr(self.chat, "action_interval", 1) or 0), 0))
             try:
                 if isinstance(action, SendTextAction):
                     self.log(

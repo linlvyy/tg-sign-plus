@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Callable
 
 from pyrogram.types import Message
@@ -60,6 +59,4 @@ async def handle_edited_message(
         event="edited_message",
         meta={"chat_id": message.chat.id, "message_id": message.id, "sender": str(sender)},
     )
-    while context.waiting_message and context.waiting_message.id == message.id:
-        await asyncio.sleep(0.3)
     await store_incoming_message(message=message, context=context, log=log)

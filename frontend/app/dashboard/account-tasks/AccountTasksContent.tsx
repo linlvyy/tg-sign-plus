@@ -9,7 +9,7 @@ import {
     deleteSignTask,
     runSignTask,
     getSignTaskHistory,
-    getSignTaskCanaryReport,
+    getSignTaskEventEngineReport,
     getAccountChats,
     refreshAccountChats,
     searchAccountChats,
@@ -107,7 +107,6 @@ const HISTORY_META_KEYS = new Set([
     "attempt",
     "total_attempts",
     "retry_count",
-    "action_index",
     "action",
     "button_text",
     "target_text",
@@ -125,7 +124,7 @@ const getTaskHistoryStepStatus = (items: SignTaskFlowItem[]) => {
     if (items.some((item) => item.level === "error")) {
         return "failed" as const;
     }
-    if (items.some((item) => item.event === "action_completed" || item.level === "success")) {
+    if (items.some((item) => item.level === "success")) {
         return "success" as const;
     }
     return "running" as const;
@@ -218,18 +217,6 @@ const groupHistoryFlowItemsByStep = (flowItems: SignTaskFlowItem[] | undefined, 
     };
 
     for (const item of flowItems) {
-        const startsAction = item.event === "action_started";
-        if (startsAction) {
-            finalizeCurrentGroup();
-            const nextIndex = groups.length + 1;
-            currentGroup = {
-                index: nextIndex,
-                title: formatHistoryStepTitle(nextIndex, item, isZh),
-                items: [item],
-            };
-            continue;
-        }
-
         if (!currentGroup) {
             const nextIndex = groups.length + 1;
             currentGroup = {
@@ -266,7 +253,7 @@ const diagnosticLabel = (status: string | undefined, isZh: boolean) => {
     }
 };
 
-const canaryStatusLabel = (status: string | undefined, isZh: boolean) => {
+const eventHealthStatusLabel = (status: string | undefined, isZh: boolean) => {
     switch (status) {
         case "pass": return isZh ? "通过" : "Pass";
         case "warn": return isZh ? "需观察" : "Watch";
@@ -278,7 +265,7 @@ const canaryStatusLabel = (status: string | undefined, isZh: boolean) => {
     }
 };
 
-const canaryCheckSummary = (task: SignTaskCanaryReport["targets"][number]["tasks"][number], isZh: boolean) => {
+const eventHealthCheckSummary = (task: SignTaskCanaryReport["targets"][number]["tasks"][number], isZh: boolean) => {
     const checks = task.config_checks || [];
     const importantChecks = checks.filter((check) => check.status === "fail" || check.status === "warn").slice(0, 2);
     if (importantChecks.length === 0) return "";
@@ -305,7 +292,7 @@ const getHistoryDiagnostics = (log: SignTaskHistoryItem | undefined, isZh: boole
     const warningItem = [...items].reverse().find((item) => item.level === "warning");
     const failedGroup = [...groups].reverse().find((group) => getTaskHistoryStepStatus(group.items) === "failed" || group.items.some((item) => item.level === "warning"));
     const failureIndex = errorItem || warningItem ? items.findIndex((item) => item === (errorItem || warningItem)) : items.length;
-    const lastSuccessItem = items.slice(0, failureIndex >= 0 ? failureIndex : items.length).reverse().find((item) => item.event === "action_completed" || item.level === "success");
+    const lastSuccessItem = items.slice(0, failureIndex >= 0 ? failureIndex : items.length).reverse().find((item) => item.level === "success");
     const start = items[0]?.ts;
     const end = items[items.length - 1]?.ts || log?.time;
     const completedSteps = groups.filter((group) => getTaskHistoryStepStatus(group.items) === "success").length;
@@ -513,14 +500,12 @@ type TaskFormState = {
     chat_name: string;
     actions: TaskFormAction[];
     delete_after: number | undefined;
-    action_interval: number;
     event_timeout: number | undefined;
     event_retries: number | undefined;
     event_retry_wait: number | undefined;
     event_history_limit: number | undefined;
     event_action_timeout: number | undefined;
     event_ai_fallback: boolean | undefined;
-    engine: "legacy" | "event";
     execution_mode: "fixed" | "range";
     range_start: string;
     range_end: string;
@@ -689,7 +674,7 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
                             <Hourglass weight="bold" size={12} />
                             <span>~{Math.round(task.random_seconds / 60)}m</span>
                         </div>
-                    ) : null}
+                        ) : null}
                 </div>
 
                 <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] px-4 py-3">
@@ -844,7 +829,7 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
 
 TaskItem.displayName = "TaskItem";
 
-const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
+const EventEngineHealthPanel = ({ report, loading, onRefresh, isZh }: {
     report: SignTaskCanaryReport | null;
     loading: boolean;
     onRefresh: () => void;
@@ -858,14 +843,14 @@ const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
                     <div className="flex flex-wrap items-center gap-2">
                         <Robot weight="bold" size={18} className="text-[var(--accent)]" />
                         <h2 className="text-base font-semibold text-[var(--text-primary)]">
-                            {isZh ? "事件引擎 canary" : "Event canary"}
+                            {isZh ? "事件引擎健康" : "Event engine health"}
                         </h2>
                         <StatusBadge tone={diagnosticTone(report?.status) as any} className="normal-case tracking-normal">
-                            {canaryStatusLabel(report?.status, isZh)}
+                            {eventHealthStatusLabel(report?.status, isZh)}
                         </StatusBadge>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-tertiary)]">
-                        {isZh ? "peach、喵了个咪、厂妹的最新历史诊断汇总" : "Latest diagnostics for peach, meow, and factory flows"}
+                        {isZh ? "基于当前账号真实任务配置和最近运行历史生成" : "Generated from this account's tasks and latest run history"}
                     </div>
                 </div>
                 <Button size="sm" variant="secondary" onClick={onRefresh} disabled={loading}>
@@ -882,7 +867,7 @@ const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
                                 {target.label}
                             </div>
                             <StatusBadge tone={diagnosticTone(target.status) as any} className="shrink-0 normal-case tracking-normal">
-                                {canaryStatusLabel(target.status, isZh)}
+                                {eventHealthStatusLabel(target.status, isZh)}
                             </StatusBadge>
                         </div>
                         <div className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">
@@ -893,17 +878,17 @@ const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
                                 {target.tasks.slice(0, 2).map((task) => (
                                     <div key={`${task.account_name}/${task.task_name}`} className="space-y-0.5 text-[11px] leading-5 text-[var(--text-tertiary)]">
                                         <div className="truncate">
-                                            {task.account_name}/{task.task_name} · {canaryStatusLabel(task.status, isZh)}
+                                            {task.account_name}/{task.task_name} · {eventHealthStatusLabel(task.status, isZh)}
                                         </div>
                                         <div className="truncate">
-                                            {isZh ? "配置" : "Config"}={canaryStatusLabel(task.config_status || "unknown", isZh)}
+                                            {isZh ? "配置" : "Config"}={eventHealthStatusLabel(task.config_status || "unknown", isZh)}
                                             {" · "}
-                                            {isZh ? "运行" : "Run"}={canaryStatusLabel(task.run_status || "unknown", isZh)}
+                                            {isZh ? "运行" : "Run"}={eventHealthStatusLabel(task.run_status || "unknown", isZh)}
                                             {task.latest_time ? ` · ${task.latest_time}` : ""}
                                         </div>
-                                        {canaryCheckSummary(task, isZh) ? (
+                                        {eventHealthCheckSummary(task, isZh) ? (
                                             <div className="truncate text-[var(--text-secondary)]">
-                                                {canaryCheckSummary(task, isZh)}
+                                                {eventHealthCheckSummary(task, isZh)}
                                             </div>
                                         ) : null}
                                         {task.latest_summary ? (
@@ -922,7 +907,7 @@ const CanaryPanel = ({ report, loading, onRefresh, isZh }: {
                     </div>
                 )) : (
                     <div className="rounded-xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-tertiary)] px-4 py-5 text-sm text-[var(--text-tertiary)] md:col-span-3">
-                        {isZh ? "暂无 canary 诊断数据" : "No canary diagnostics yet"}
+                        {isZh ? "暂无事件引擎诊断数据" : "No event-engine diagnostics yet"}
                     </div>
                 )}
             </div>
@@ -945,8 +930,8 @@ export default function AccountTasksContent() {
     const [tasks, setTasks] = useState<SignTask[]>([]);
     const [chats, setChats] = useState<ChatInfo[]>([]);
     const [schedulerStatus, setSchedulerStatus] = useState<SchedulerStatus | null>(null);
-    const [canaryReport, setCanaryReport] = useState<SignTaskCanaryReport | null>(null);
-    const [canaryLoading, setCanaryLoading] = useState(false);
+    const [eventEngineReport, setEventEngineReport] = useState<SignTaskCanaryReport | null>(null);
+    const [eventEngineReportLoading, setEventEngineReportLoading] = useState(false);
     const [chatSearch, setChatSearch] = useState("");
     const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
     const [chatSearchLoading, setChatSearchLoading] = useState(false);
@@ -1009,14 +994,12 @@ export default function AccountTasksContent() {
         chat_name: "",
         actions: [defaultTaskAction()],
         delete_after: undefined,
-        action_interval: 1,
         event_timeout: undefined,
         event_retries: undefined,
         event_retry_wait: undefined,
         event_history_limit: undefined,
         event_action_timeout: undefined,
         event_ai_fallback: undefined,
-        engine: "event",
         execution_mode: "range",
         range_start: "09:00",
         range_end: "18:00",
@@ -1034,14 +1017,12 @@ export default function AccountTasksContent() {
         chat_name: "",
         actions: [defaultTaskAction()],
         delete_after: undefined,
-        action_interval: 1,
         event_timeout: undefined,
         event_retries: undefined,
         event_retry_wait: undefined,
         event_history_limit: undefined,
         event_action_timeout: undefined,
         event_ai_fallback: undefined,
-        engine: "event",
         execution_mode: "fixed",
         range_start: "09:00",
         range_end: "18:00",
@@ -1143,14 +1124,14 @@ export default function AccountTasksContent() {
     const loadData = useCallback(async () => {
         try {
             setLoading(true);
-            const [tasksData, schedulerData, canaryData] = await Promise.all([
+            const [tasksData, schedulerData, eventEngineData] = await Promise.all([
                 listSignTasks(accountName),
                 getSchedulerStatus(accountName),
-                getSignTaskCanaryReport(accountName),
+                getSignTaskEventEngineReport(accountName),
             ]);
             setTasks(tasksData);
             setSchedulerStatus(schedulerData);
-            setCanaryReport(canaryData);
+            setEventEngineReport(eventEngineData);
         } catch (err: any) {
             if (handleAccountSessionInvalid(err)) return;
             const toast = addToastRef.current;
@@ -1163,14 +1144,14 @@ export default function AccountTasksContent() {
         }
     }, [accountName, formatErrorMessage, handleAccountSessionInvalid]);
 
-    const refreshCanaryReport = useCallback(async (silent = false) => {
+    const refreshEventEngineReport = useCallback(async (silent = false) => {
         if (!token || !accountName) return;
         try {
             if (!silent) {
-                setCanaryLoading(true);
+                setEventEngineReportLoading(true);
             }
-            const report = await getSignTaskCanaryReport(accountName);
-            setCanaryReport(report);
+            const report = await getSignTaskEventEngineReport(accountName);
+            setEventEngineReport(report);
             return report;
         } catch (err: any) {
             if (handleAccountSessionInvalid(err)) return;
@@ -1182,7 +1163,7 @@ export default function AccountTasksContent() {
             }
         } finally {
             if (!silent) {
-                setCanaryLoading(false);
+                setEventEngineReportLoading(false);
             }
         }
     }, [token, accountName, formatErrorMessage, handleAccountSessionInvalid]);
@@ -1326,16 +1307,16 @@ export default function AccountTasksContent() {
         if (!token || !historyTaskName) return;
         const timer = setInterval(async () => {
             try {
-                const [logs, latestTasks, latestSchedulerStatus, latestCanaryReport] = await Promise.all([
+                const [logs, latestTasks, latestSchedulerStatus, latestEventEngineReport] = await Promise.all([
                     getSignTaskHistory(historyTaskName, accountName, 30),
                     listSignTasks(accountName),
                     getSchedulerStatus(accountName),
-                    getSignTaskCanaryReport(accountName),
+                    getSignTaskEventEngineReport(accountName),
                 ]);
                 setHistoryLogs(logs);
                 setTasks(latestTasks);
                 setSchedulerStatus(latestSchedulerStatus);
-                setCanaryReport(latestCanaryReport);
+                setEventEngineReport(latestEventEngineReport);
             } catch {}
         }, 2000);
         return () => clearInterval(timer);
@@ -1359,16 +1340,16 @@ export default function AccountTasksContent() {
                 setLiveMonitorTaskName(null);
                 try {
                     const currentHistoryTaskName = historyTaskNameRef.current;
-                    const [latestTasks, latestRunLogs, currentHistoryLogs, latestSchedulerStatus, latestCanaryReport] = await Promise.all([
+                    const [latestTasks, latestRunLogs, currentHistoryLogs, latestSchedulerStatus, latestEventEngineReport] = await Promise.all([
                         listSignTasks(accountName),
                         getSignTaskHistory(liveMonitorTaskName, accountName, 1),
                         currentHistoryTaskName ? getSignTaskHistory(currentHistoryTaskName, accountName, 30) : Promise.resolve(null),
                         getSchedulerStatus(accountName),
-                        getSignTaskCanaryReport(accountName),
+                        getSignTaskEventEngineReport(accountName),
                     ]);
                     setTasks(latestTasks);
                     setSchedulerStatus(latestSchedulerStatus);
-                    setCanaryReport(latestCanaryReport);
+                    setEventEngineReport(latestEventEngineReport);
                     if (currentHistoryLogs) {
                         setHistoryLogs(currentHistoryLogs);
                     }
@@ -1712,7 +1693,6 @@ export default function AccountTasksContent() {
                     name: newTask.chat_name || t("chat_default_name").replace("{id}", String(chatId)),
                     actions: normalizeTaskActions(newTask.actions),
                     delete_after: newTask.delete_after,
-                    action_interval: newTask.action_interval,
                     event_timeout: newTask.event_timeout,
                     event_retries: newTask.event_retries,
                     event_retry_wait: newTask.event_retry_wait,
@@ -1721,7 +1701,6 @@ export default function AccountTasksContent() {
                     event_ai_fallback: newTask.event_ai_fallback,
                 }],
                 random_seconds: newTask.random_minutes * 60,
-                engine: newTask.engine,
                 execution_mode: newTask.execution_mode,
                 range_start: newTask.range_start,
                 range_end: newTask.range_end,
@@ -1740,14 +1719,12 @@ export default function AccountTasksContent() {
                 chat_name: "",
                 actions: [defaultTaskAction()],
                 delete_after: undefined,
-                action_interval: 1,
                 event_timeout: undefined,
                 event_retries: undefined,
                 event_retry_wait: undefined,
                 event_history_limit: undefined,
                 event_action_timeout: undefined,
                 event_ai_fallback: undefined,
-                engine: "event",
                 execution_mode: "fixed",
                 range_start: "09:00",
                 range_end: "18:00",
@@ -1786,14 +1763,12 @@ export default function AccountTasksContent() {
             chat_name: chat?.name || "",
             actions: chat?.actions?.map(toTaskFormAction) || [defaultTaskAction()],
             delete_after: chat?.delete_after,
-            action_interval: chat?.action_interval || 1,
             event_timeout: chat?.event_timeout,
             event_retries: chat?.event_retries,
             event_retry_wait: chat?.event_retry_wait,
             event_history_limit: chat?.event_history_limit,
             event_action_timeout: chat?.event_action_timeout,
             event_ai_fallback: chat?.event_ai_fallback,
-            engine: task.engine || "event",
             execution_mode: task.execution_mode || "fixed",
             range_start: task.range_start || "09:00",
             range_end: task.range_end || "18:00",
@@ -1821,13 +1796,11 @@ export default function AccountTasksContent() {
                 sign_at: editTask.sign_at,
                 random_seconds: editTask.random_minutes * 60,
                 retry_count: editTask.retry_count,
-                engine: editTask.engine,
                 chats: [{
                     chat_id: chatId,
                     name: editTask.chat_name || t("chat_default_name").replace("{id}", String(chatId)),
                     actions: normalizeTaskActions(editTask.actions),
                     delete_after: editTask.delete_after,
-                    action_interval: editTask.action_interval,
                     event_timeout: editTask.event_timeout,
                     event_retries: editTask.event_retries,
                     event_retry_wait: editTask.event_retry_wait,
@@ -2021,10 +1994,10 @@ export default function AccountTasksContent() {
                     </div>
                 </section>
 
-                <CanaryPanel
-                    report={canaryReport}
-                    loading={canaryLoading}
-                    onRefresh={() => void refreshCanaryReport(false)}
+                <EventEngineHealthPanel
+                    report={eventEngineReport}
+                    loading={eventEngineReportLoading}
+                    onRefresh={() => void refreshEventEngineReport(false)}
                     isZh={isZh}
                 />
 
@@ -2188,46 +2161,7 @@ export default function AccountTasksContent() {
                             </select>
                         </div>
 
-                        <div className="space-y-2">
-                            <label className={fieldLabelClass}>{language === "zh" ? "执行引擎" : "Engine"}</label>
-                            <select
-                                className={selectClassName}
-                                value={showCreateDialog ? newTask.engine : editTask.engine}
-                                onChange={(e) => {
-                                    const engine = e.target.value as "legacy" | "event";
-                                    if (showCreateDialog) {
-                                        setNewTask({ ...newTask, engine });
-                                    } else {
-                                        setEditTask({ ...editTask, engine });
-                                    }
-                                }}
-                            >
-                                <option value="event">{language === "zh" ? "消息事件驱动" : "Message event"}</option>
-                                <option value="legacy">{language === "zh" ? "动作流水线（兼容）" : "Action pipeline"}</option>
-                            </select>
-                        </div>
-
-                        <FormField label={t("action_interval")} htmlFor="task-action-interval">
-                            <Input
-                                id="task-action-interval"
-                                type="text"
-                                inputMode="numeric"
-                                value={showCreateDialog ? newTask.action_interval : editTask.action_interval}
-                                onChange={(e) => {
-                                    const cleaned = e.target.value.replace(/[^0-9]/g, "");
-                                    const raw = cleaned === "" ? 0 : parseInt(cleaned, 10);
-                                    const val = Number.isNaN(raw) ? 0 : raw;
-                                    if (showCreateDialog) {
-                                        setNewTask({ ...newTask, action_interval: val });
-                                    } else {
-                                        setEditTask({ ...editTask, action_interval: val });
-                                    }
-                                }}
-                            />
-                        </FormField>
-
-                        {(showCreateDialog ? newTask.engine : editTask.engine) === "event" ? (
-                            <div className="grid grid-cols-2 gap-2 md:col-span-2">
+                        <div className="grid grid-cols-2 gap-2 md:col-span-2">
                                 <FormField label={language === "zh" ? "事件总等待秒数" : "Event timeout"} htmlFor="task-event-timeout">
                                     <Input
                                         id="task-event-timeout"
@@ -2344,7 +2278,6 @@ export default function AccountTasksContent() {
                                     {language === "zh" ? "未知后续交互启用 AI 兜底" : "AI fallback for unknown follow-up"}
                                 </label>
                             </div>
-                        ) : null}
 
                         <FormField label={t("retry_count")} htmlFor="task-retry-count">
                             <Input
