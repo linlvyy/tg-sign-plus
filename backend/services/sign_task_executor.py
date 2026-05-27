@@ -54,30 +54,7 @@ class SignTaskExecutor:
 
     @staticmethod
     def task_requires_updates(task_config: Dict[str, Any] | None) -> bool:
-        if not isinstance(task_config, dict):
-            return True
-        if task_config.get("engine", "event") == "event":
-            return True
-        chats = task_config.get("chats")
-        if not isinstance(chats, list):
-            return True
-        response_actions = {3, 4, 5, 6, 7, 8}
-        for chat in chats:
-            if not isinstance(chat, dict):
-                continue
-            actions = chat.get("actions")
-            if not isinstance(actions, list):
-                continue
-            for action in actions:
-                if not isinstance(action, dict):
-                    continue
-                try:
-                    action_id = int(action.get("action"))
-                except (TypeError, ValueError):
-                    continue
-                if action_id in response_actions:
-                    return True
-        return False
+        return True
 
     @staticmethod
     def _read_int_env(name: str, default: int, minimum: int = 0) -> int:
@@ -96,7 +73,7 @@ class SignTaskExecutor:
     @classmethod
     def task_timeout_seconds(cls, task_config: Dict[str, Any] | None) -> int:
         configured_timeout = cls._read_int_env("SIGN_TASK_RUN_TIMEOUT", 180, minimum=30)
-        if not isinstance(task_config, dict) or task_config.get("engine", "event") != "event":
+        if not isinstance(task_config, dict):
             return configured_timeout
 
         chats = task_config.get("chats")
@@ -129,33 +106,19 @@ class SignTaskExecutor:
         if not isinstance(task_config, dict):
             return {"engine": "event", "chat_count": 0}
         chats = task_config.get("chats") if isinstance(task_config.get("chats"), list) else []
-        engine = str(task_config.get("engine") or "event")
+        engine = "event"
         meta: Dict[str, Any] = {
             "engine": engine,
             "chat_count": len(chats),
         }
-        if engine != "event":
-            return meta
 
         event_timeouts: list[float] = []
         event_retries: list[int] = []
         event_history_limits: list[int] = []
         event_action_timeouts: list[float] = []
-        known_targets: list[str] = []
         for chat in chats:
             if not isinstance(chat, dict):
                 continue
-            identity = " ".join(
-                str(chat.get(key) or "").lower()
-                for key in ("chat_id", "name", "username")
-            )
-            if "8060839337" in identity or "peach_emby_bot" in identity or "peach" in identity:
-                known_targets.append("peach")
-            elif "7516512581" in identity or "gymeowfly_bot" in identity or "喵了个咪" in identity or "飞了个喵" in identity:
-                known_targets.append("meow")
-            elif "1429576125" in identity or "embypublicbot" in identity or "厂妹" in identity:
-                known_targets.append("emby_public")
-
             for source, target, caster in (
                 ("event_timeout", event_timeouts, float),
                 ("event_retries", event_retries, int),
@@ -173,7 +136,6 @@ class SignTaskExecutor:
         meta.update(
             {
                 "event_chat_count": sum(1 for chat in chats if isinstance(chat, dict)),
-                "known_targets": ",".join(sorted(set(known_targets))),
             }
         )
         if event_timeouts:

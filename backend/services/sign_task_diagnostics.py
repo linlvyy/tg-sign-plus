@@ -87,11 +87,8 @@ class SignTaskDiagnostics:
         items = [item for item in flow_items or [] if isinstance(item, dict)]
         events = _events(items)
         actions = _configured_actions(task_config)
-        configured_engine = str((task_config or {}).get("engine") or "event")
-        is_event_config = configured_engine == "event"
-
         checks: list[DiagnosticCheck] = []
-        checks.extend(cls._check_event_engine_started(events, is_event_config))
+        checks.extend(cls._check_event_engine_started(events))
         completion_result_status = _completion_result_status(items)
         checks.extend(cls._check_expected_buttons(items, actions, bool(success), completion_result_status))
         checks.extend(cls._check_captcha_path(items, events, actions, bool(success)))
@@ -109,7 +106,7 @@ class SignTaskDiagnostics:
         checks.extend(cls._check_history_hard_failure_skipped(events))
         checks.extend(cls._check_history_rescue(events, bool(success)))
         checks.extend(cls._check_retry_limit(events, bool(success)))
-        checks.extend(cls._check_runtime_config(items, is_event_config))
+        checks.extend(cls._check_runtime_config(items))
         checks.extend(cls._check_task_failure_context(items, bool(success)))
 
         status = cls._overall_status(checks, success)
@@ -150,19 +147,10 @@ class SignTaskDiagnostics:
         }
 
     @staticmethod
-    def _check_event_engine_started(events: list[str], is_event_config: bool) -> list[DiagnosticCheck]:
+    def _check_event_engine_started(events: list[str]) -> list[DiagnosticCheck]:
         if "event_engine_started" in events:
             return [DiagnosticCheck("event_engine_started", "事件引擎启动", "pass")]
-        if is_event_config:
-            return [
-                DiagnosticCheck(
-                    "event_engine_started",
-                    "事件引擎启动",
-                    "fail",
-                    "任务配置为 event，但日志中没有 event_engine_started。",
-                )
-            ]
-        return [DiagnosticCheck("event_engine_started", "事件引擎启动", "skip", "legacy 引擎任务")]
+        return [DiagnosticCheck("event_engine_started", "事件引擎启动", "fail", "日志中没有 event_engine_started。")]
 
     @staticmethod
     def _check_expected_buttons(
@@ -613,7 +601,6 @@ class SignTaskDiagnostics:
     @staticmethod
     def _check_runtime_config(
         items: Sequence[Dict[str, Any]],
-        is_event_config: bool,
     ) -> list[DiagnosticCheck]:
         runtime_items = [item for item in items if _event(item) == "task_runtime_config"]
         if not runtime_items:
@@ -623,24 +610,22 @@ class SignTaskDiagnostics:
                 DiagnosticCheck(
                     "runtime_config",
                     "运行配置快照",
-                    "warn" if is_event_config else "skip",
+                    "warn",
                     "历史中没有 task_runtime_config，无法直接证明本次实际运行参数。",
                 )
             ]
         meta = _meta(runtime_items[-1])
         engine = str(meta.get("engine") or "")
-        if is_event_config and engine != "event":
+        if engine != "event":
             return [
                 DiagnosticCheck(
                     "runtime_config",
                     "运行配置快照",
                     "fail",
-                    f"任务配置为 event，但运行快照 engine={engine or '-'}。",
+                    f"运行快照 engine={engine or '-'}，预期为 event。",
                 )
             ]
         detail_parts = [f"engine={engine or '-'}", f"chats={meta.get('chat_count', '-')}"]
-        if meta.get("known_targets"):
-            detail_parts.append(f"targets={meta.get('known_targets')}")
         if meta.get("max_event_timeout") is not None:
             detail_parts.append(f"event_timeout<={meta.get('max_event_timeout')}")
         if meta.get("max_event_retries") is not None:

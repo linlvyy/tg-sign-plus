@@ -103,7 +103,7 @@ class ConfigService:
             "random_seconds": task.get("random_seconds", 0),
             "sign_interval": task.get("sign_interval", 1),
             "retry_count": task.get("retry_count", 0),
-            "engine": task.get("engine", "event"),
+            "engine": "event",
             "chats": task.get("chats", []),
             "execution_mode": task.get("execution_mode", "fixed"),
             "range_start": task.get("range_start", ""),

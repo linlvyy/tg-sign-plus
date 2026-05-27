@@ -26,7 +26,7 @@ from backend.core.database import get_db
 from backend.core.validators import ValidationError, validate_account_name
 from backend.repositories.sign_task_config_repo import get_sign_task_config_repo
 from backend.repositories.sign_task_history_repo import get_sign_task_history_repo
-from backend.services.sign_task_canary import generate_canary_report
+from backend.services.sign_task_canary import generate_canary_report, generate_event_engine_health_report
 from backend.services.sign_tasks import get_sign_task_service
 
 router = APIRouter()
@@ -92,7 +92,6 @@ class ChatConfig(BaseModel):
     name: str = Field("", description="Chat 名称")
     actions: List[Dict[str, Any]] = Field(..., description="动作列表")
     delete_after: Optional[int] = Field(None, ge=0, description="删除延迟（秒）")
-    action_interval: int = Field(1, ge=0, description="动作间隔（秒）")
     event_timeout: Optional[float] = Field(None, ge=1, description="事件引擎总等待秒数")
     event_retries: Optional[int] = Field(None, ge=0, description="事件引擎内部重试次数")
     event_retry_wait: Optional[float] = Field(None, ge=0, description="事件引擎重试等待秒数")
@@ -150,7 +149,6 @@ class SignTaskCreate(BaseModel):
         None, ge=0, description="签到间隔秒数，留空使用全局配置或随机 1-120 秒"
     )
     retry_count: int = Field(0, ge=0, description="失败重试次数")
-    engine: Optional[str] = Field("event", description="执行引擎: legacy/event")
     execution_mode: Optional[str] = Field("fixed", description="执行模式: fixed/range")
     range_start: Optional[str] = Field(None, description="随机范围开始时间")
     range_end: Optional[str] = Field(None, description="随机范围结束时间")
@@ -176,7 +174,6 @@ class SignTaskUpdate(BaseModel):
     random_seconds: Optional[int] = Field(None, ge=0, description="随机延迟秒数")
     sign_interval: Optional[int] = Field(None, ge=0, description="签到间隔秒数")
     retry_count: Optional[int] = Field(None, ge=0, description="失败重试次数")
-    engine: Optional[str] = Field(None, description="执行引擎: legacy/event")
     execution_mode: Optional[str] = Field(None, description="执行模式: fixed/range")
     range_start: Optional[str] = Field(None, description="随机范围开始时间")
     range_end: Optional[str] = Field(None, description="随机范围结束时间")
@@ -353,13 +350,40 @@ def get_canary_report_api(
     max_age_hours: float = Query(36.0, ge=0),
     current_user=Depends(get_current_user),
 ):
-    """汇总 peach、喵了个咪、厂妹的事件引擎 canary 诊断。"""
+    """兼容入口：汇总当前任务的事件引擎健康状态。"""
 
     account_name = _valid_optional_account_name(account_name)
     from backend.core.config import get_settings
 
     settings = get_settings()
     return generate_canary_report(
+        config_repo=get_sign_task_config_repo(),
+        history_repo=get_sign_task_history_repo(),
+        account_name=account_name,
+        history_limit=history_limit,
+        max_age_hours=max_age_hours,
+        source={
+            "database_url": settings.database_url,
+            "data_dir": str(settings.data_dir) if settings.data_dir else "",
+            "resolved_base_dir": str(settings.resolve_base_dir()),
+        },
+    )
+
+
+@router.get("/event-engine/report")
+def get_event_engine_report_api(
+    account_name: Optional[str] = None,
+    history_limit: int = Query(1, ge=1, le=20),
+    max_age_hours: float = Query(36.0, ge=0),
+    current_user=Depends(get_current_user),
+):
+    """汇总当前账号真实签到任务的事件引擎健康状态。"""
+
+    account_name = _valid_optional_account_name(account_name)
+    from backend.core.config import get_settings
+
+    settings = get_settings()
+    return generate_event_engine_health_report(
         config_repo=get_sign_task_config_repo(),
         history_repo=get_sign_task_history_repo(),
         account_name=account_name,
@@ -393,7 +417,6 @@ async def create_sign_task(
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
             retry_count=payload.retry_count,
-            engine=payload.engine,
             execution_mode=payload.execution_mode,
             range_start=payload.range_start,
             range_end=payload.range_end,
@@ -444,7 +467,6 @@ async def update_sign_task(
             random_seconds=payload.random_seconds,
             sign_interval=payload.sign_interval,
             retry_count=payload.retry_count,
-            engine=payload.engine,
             account_name=account_name or existing.get("account_name"),
             execution_mode=payload.execution_mode,
             range_start=payload.range_start,

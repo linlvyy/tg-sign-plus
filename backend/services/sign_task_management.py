@@ -87,7 +87,6 @@ class SignTaskManagementService:
         execution_mode: str = "fixed",
         range_start: str = "",
         range_end: str = "",
-        engine: str = "event",
     ) -> Dict[str, Any]:
         import random
         from backend.services.config import get_config_service
@@ -110,7 +109,7 @@ class SignTaskManagementService:
             "random_seconds": random_seconds,
             "sign_interval": sign_interval,
             "retry_count": max(int(retry_count or 0), 0),
-            "engine": engine,
+            "engine": "event",
             "chats": chats,
             "execution_mode": execution_mode,
             "range_start": range_start,
@@ -172,7 +171,6 @@ class SignTaskManagementService:
         execution_mode: Optional[str] = None,
         range_start: Optional[str] = None,
         range_end: Optional[str] = None,
-        engine: Optional[str] = None,
     ) -> Dict[str, Any]:
         existing = self.get_task(task_name, account_name)
         if not existing:
@@ -187,7 +185,7 @@ class SignTaskManagementService:
             "random_seconds": random_seconds if random_seconds is not None else existing["random_seconds"],
             "sign_interval": sign_interval if sign_interval is not None else existing["sign_interval"],
             "retry_count": max(int(retry_count), 0) if retry_count is not None else existing.get("retry_count", 0),
-            "engine": engine if engine is not None else existing.get("engine", "event"),
+            "engine": "event",
             "chats": next_chats,
             "execution_mode": execution_mode if execution_mode is not None else existing.get("execution_mode", "fixed"),
             "range_start": range_start if range_start is not None else existing.get("range_start", ""),
@@ -227,7 +225,7 @@ class SignTaskManagementService:
             "random_seconds": config["random_seconds"],
             "sign_interval": config["sign_interval"],
             "retry_count": config["retry_count"],
-            "engine": config.get("engine", "event"),
+            "engine": "event",
             "chats": config["chats"],
             "enabled": config["enabled"],
             "execution_mode": config.get("execution_mode", "fixed"),
