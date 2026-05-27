@@ -1,7 +1,9 @@
 import base64
+import asyncio
 import json
 import os
 import pathlib
+import re
 from typing import TYPE_CHECKING, Union
 
 import json_repair
@@ -13,6 +15,13 @@ if TYPE_CHECKING:
 from tg_signer.utils import UserInput, print_to_user
 
 DEFAULT_MODEL = "gpt-4o"
+
+
+def _read_float_env(name: str, default: float, minimum: float = 1.0) -> float:
+    try:
+        return max(float(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
 
 
 def encode_image(image: bytes):
@@ -108,6 +117,13 @@ class AITools:
             api_key=cfg["api_key"], base_url=cfg.get("base_url")
         )
         self.default_model = cfg.get("model") or DEFAULT_MODEL
+        self.request_timeout = _read_float_env("TG_AI_REQUEST_TIMEOUT", 45.0, minimum=1.0)
+
+    async def _completion(self, client: "AsyncOpenAI", **kwargs):
+        return await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            timeout=self.request_timeout,
+        )
 
     async def choose_option_by_image(
         self,
@@ -144,7 +160,8 @@ class AITools:
             },
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self._completion(
+            client,
             messages=messages,
             model=model,
             response_format={"type": "json_object"},
@@ -187,7 +204,8 @@ class AITools:
                 ],
             },
         ]
-        completion = await client.chat.completions.create(
+        completion = await self._completion(
+            client,
             messages=messages,
             model=model,
             stream=False,
@@ -207,7 +225,8 @@ class AITools:
         client = client or self.client
         text = f"问题是: {query}\n\n只需要给出答案，不要解释，不要输出任何其他内容。The answer is:"
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self._completion(
+            client,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": text},
@@ -237,7 +256,8 @@ class AITools:
             f"可选按钮：{json.dumps(options, ensure_ascii=False)}\n\n"
             "只回复一个候选文字。"
         )
-        completion = await client.chat.completions.create(
+        completion = await self._completion(
+            client,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": text},
@@ -265,10 +285,64 @@ class AITools:
             {"role": "user", "content": f"{query}"},
         ]
         # noinspection PyTypeChecker
-        completion = await client.chat.completions.create(
+        completion = await self._completion(
+            client,
             messages=messages,
             model=model,
             stream=False,
         )
         message = completion.choices[0].message
         return message.content
+
+    async def infer_sign_interaction(
+        self,
+        text: str,
+        buttons: list[str],
+        client: "AsyncOpenAI" = None,
+        model: str = None,
+    ) -> dict:
+        prompt = (
+            "你是 Telegram 签到流程助手。根据机器人消息判断下一步动作。\n"
+            "只允许输出 JSON，不要解释。\n"
+            "可选动作：\n"
+            "- click: 需要点击候选按钮之一\n"
+            "- send: 需要发送一段简短文本\n"
+            "- status: 这是签到状态或结果，无需操作\n"
+            "- noop: 无需操作或不确定\n"
+            "JSON 格式：{\"action\":\"click|send|status|noop\",\"value\":\"...\"}。\n"
+            "如果 action=click，value 必须等于候选按钮中的一个。"
+        )
+        query = json.dumps(
+            {"message": text or "", "buttons": buttons or []},
+            ensure_ascii=False,
+        )
+        answer = await self.get_reply(prompt, query, client=client, model=model)
+        data = json_repair.loads(answer or "{}")
+        action = str(data.get("action") or "noop").strip().lower()
+        value = str(data.get("value") or "").strip()
+        if action not in {"click", "send", "status", "noop"}:
+            action = "noop"
+        if action == "click" and value not in (buttons or []):
+            value = _best_button_match(value, buttons or [])
+            if not value:
+                action = "noop"
+        if action == "send":
+            value = value[:128].strip()
+            if not value:
+                action = "noop"
+        return {"action": action, "value": value}
+
+
+def _best_button_match(value: str, buttons: list[str]) -> str:
+    target = _compact(value)
+    if not target:
+        return ""
+    for button in buttons:
+        compact_button = _compact(button)
+        if target == compact_button or target in compact_button or compact_button in target:
+            return button
+    return ""
+
+
+def _compact(value: str) -> str:
+    return re.sub(r"\s+", "", str(value or "")).lower()

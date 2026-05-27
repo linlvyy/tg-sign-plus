@@ -71,7 +71,14 @@ def message_version(message: Message) -> tuple:
     reply_buttons = ()
     if isinstance(reply_markup, InlineKeyboardMarkup):
         inline_buttons = tuple(
-            tuple(getattr(button, "text", "") for button in row)
+            tuple(
+                (
+                    getattr(button, "text", ""),
+                    getattr(button, "callback_data", None),
+                    getattr(button, "url", None),
+                )
+                for button in row
+            )
             for row in reply_markup.inline_keyboard
         )
     elif isinstance(reply_markup, ReplyKeyboardMarkup):

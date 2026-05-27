@@ -231,6 +231,26 @@ class ReplyByImageRecognitionAction(SignAction):
     action: Literal[SupportAction.REPLY_BY_IMAGE_RECOGNITION] = (
         SupportAction.REPLY_BY_IMAGE_RECOGNITION
     )
+    caption_pattern: Optional[str] = None
+    captcha_lengths: List[int] = []
+    captcha_charset: Optional[str] = None
+    captcha_case: Literal["preserve", "upper", "lower"] = "preserve"
+    reply_to_message: bool = False
+
+    def __init__(self, **data):
+        lengths = data.get("captcha_lengths") or []
+        if isinstance(lengths, int):
+            data["captcha_lengths"] = [lengths]
+        elif isinstance(lengths, list):
+            data["captcha_lengths"] = [
+                int(item) for item in lengths if str(item).strip().isdigit()
+            ]
+        captcha_charset = data.get("captcha_charset")
+        if captcha_charset is not None:
+            data["captcha_charset"] = "".join(dict.fromkeys(str(captcha_charset).strip()))
+            if not data["captcha_charset"]:
+                data["captcha_charset"] = None
+        super().__init__(**data)
 
 
 class ClickButtonByCalculationProblemAction(SignAction):
@@ -250,11 +270,28 @@ class AssertSuccessByTextAction(SignAction):
         SupportAction.ASSERT_SUCCESS_BY_TEXT
     )
     keywords: List[str]
+    checked_keywords: List[str] = []
+    retry_keywords: List[str] = []
+    fail_keywords: List[str] = []
+    account_fail_keywords: List[str] = []
+    ignore_keywords: List[str] = []
 
     def __init__(self, **data):
-        keywords = data.get("keywords") or []
-        if isinstance(keywords, list):
-            data["keywords"] = [str(item).strip() for item in keywords if str(item).strip()]
+        for field_name in (
+            "keywords",
+            "checked_keywords",
+            "retry_keywords",
+            "fail_keywords",
+            "account_fail_keywords",
+            "ignore_keywords",
+        ):
+            values = data.get(field_name) or []
+            if isinstance(values, str):
+                values = [item.strip() for item in values.split("#")]
+            if isinstance(values, list):
+                data[field_name] = [
+                    str(item).strip() for item in values if str(item).strip()
+                ]
         super().__init__(**data)
 
 
@@ -278,6 +315,12 @@ class SignChatV3(BaseJSONConfig):
     delete_after: Optional[int] = None
     actions: List[ActionT]
     action_interval: float = 1  # actions的间隔时间，单位秒
+    event_timeout: Optional[float] = None  # 事件引擎总等待秒数
+    event_retries: Optional[int] = None  # 事件引擎内部重试次数
+    event_retry_wait: Optional[float] = None  # 事件引擎重试入口动作前等待秒数
+    event_history_limit: Optional[int] = None  # 事件引擎启动前扫描历史消息条数
+    event_action_timeout: Optional[float] = None  # 事件引擎单个响应动作超时秒数
+    event_ai_fallback: Optional[bool] = None  # 事件引擎未知后续交互是否启用 AI 兜底
 
     def __repr__(self) -> str:
         return (
@@ -394,6 +437,7 @@ class SignConfigV3(BaseJSONConfig):
     random_seconds: int = 0
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
     retry_count: int = 0  # 失败重试次数
+    engine: Literal["legacy", "event"] = "event"  # 执行引擎：event=消息事件驱动，legacy=动作流水线兼容模式
 
     @property
     def requires_ai(self) -> bool:
@@ -401,6 +445,8 @@ class SignConfigV3(BaseJSONConfig):
 
     @property
     def requires_updates(self) -> bool:
+        if self.engine == "event":
+            return True
         return any(chat.requires_updates for chat in self.chats)
 
 

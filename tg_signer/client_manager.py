@@ -12,7 +12,11 @@ from urllib import parse
 from pyrogram import Client as BaseClient
 from pyrogram.methods.utilities.idle import idle
 from pyrogram.session import Session
-from pyrogram.storage import MemoryStorage
+
+try:
+    from pyrogram.storage import MemoryStorage
+except ImportError:
+    MemoryStorage = None
 
 logger = logging.getLogger("tg-signer")
 
@@ -23,8 +27,17 @@ def _read_float_env(name: str, default: float) -> float:
         return default
 
 
+def _read_int_env(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        return max(int(os.environ.get(name, default)), minimum)
+    except (TypeError, ValueError):
+        return default
+
+
 Session.START_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 15)
 _TG_CONNECT_TIMEOUT = _read_float_env("TG_CONNECT_TIMEOUT", 20)
+_TG_CONNECT_RETRIES = _read_int_env("TG_CONNECT_RETRIES", 3, minimum=1)
+_TG_CONNECT_RETRY_WAIT = _read_float_env("TG_CONNECT_RETRY_WAIT", 3)
 
 try:
     from pyrogram.connection.transport.tcp.tcp import TCP
@@ -67,7 +80,7 @@ class Client(BaseClient):
         key = kwargs.pop("key", None)
         super().__init__(name, *args, **kwargs)
         self.key = key or str(pathlib.Path(self.workdir).joinpath(self.name).resolve())
-        if self.in_memory and self.session_string:
+        if MemoryStorage is not None and self.in_memory and self.session_string:
             self.storage = MemoryStorage(self.name, self.session_string)
 
     async def __aenter__(self):
@@ -78,7 +91,7 @@ class Client(BaseClient):
         async with lock:
             _CLIENT_REFS[self.key] += 1
             if _CLIENT_REFS[self.key] == 1:
-                max_retries = 3
+                max_retries = _TG_CONNECT_RETRIES
                 for attempt in range(max_retries):
                     try:
                         if not self.is_connected:
@@ -110,16 +123,27 @@ class Client(BaseClient):
                         break
                     except Exception as e:
                         is_locked = "database is locked" in str(e)
-                        if is_locked and attempt < max_retries - 1:
-                            try:
-                                if self.is_connected:
-                                    await self.stop()
-                            except Exception:
-                                pass
-
-                            wait_time = (attempt + 1) * 2
+                        is_connect_error = isinstance(e, (TimeoutError, asyncio.TimeoutError, ConnectionError))
+                        if (is_locked or is_connect_error) and attempt < max_retries - 1:
+                            await _force_cleanup_client(self)
+                            wait_time = (
+                                (attempt + 1) * 2
+                                if is_locked
+                                else max(_TG_CONNECT_RETRY_WAIT, 0)
+                            )
+                            if is_locked:
+                                message = (
+                                    f"Database locked when starting client {self.name}, "
+                                    f"retrying in {wait_time}s... ({attempt + 1}/{max_retries})"
+                                )
+                            else:
+                                message = (
+                                    f"Telegram connection failed when starting client {self.name}: "
+                                    f"{type(e).__name__}: {e}. Retrying in {wait_time}s... "
+                                    f"({attempt + 1}/{max_retries})"
+                                )
                             logger.warning(
-                                f"Database locked when starting client {self.name}, retrying in {wait_time}s... ({attempt + 1}/{max_retries})"
+                                message
                             )
                             await asyncio.sleep(wait_time)
                             continue

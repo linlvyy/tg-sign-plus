@@ -54,6 +54,7 @@ from .ai_actions import (
 from .ai_tools import AITools, OpenAIConfigManager
 from .callback_actions import request_callback_answer
 from .client_manager import Client, close_client_by_name, get_api_config, get_client, get_proxy
+from .event_runner import EventRunStatus, SignEventRunner
 from .keyboard_actions import click_keyboard_by_text
 from .message_helpers import readable_chat, readable_message
 from .message_receivers import handle_edited_message, handle_incoming_message, store_incoming_message
@@ -98,8 +99,8 @@ _original_invoke = BaseClient.invoke
 _get_channel_diff_semaphore = asyncio.Semaphore(
     _read_int_env("TG_CHANNEL_DIFF_CONCURRENCY", 2, minimum=1)
 )
-_tg_rpc_retries = _read_int_env("TG_RPC_RETRIES", 1, minimum=0)
-_tg_rpc_timeout = _read_float_env("TG_RPC_TIMEOUT", 15, minimum=1.0)
+_tg_rpc_retries = _read_int_env("TG_RPC_RETRIES", 2, minimum=0)
+_tg_rpc_timeout = _read_float_env("TG_RPC_TIMEOUT", 30, minimum=1.0)
 _original_handle_updates = BaseClient.handle_updates
 
 
@@ -135,12 +136,11 @@ async def _patched_invoke(self, query, *args, **kwargs):
         kwargs.setdefault("timeout", _tg_rpc_timeout)
 
     if isinstance(query, (raw.functions.updates.GetChannelDifference, raw.functions.updates.GetDifference)):
-        # Disable Pyrogram's internal sleep and retry mechanisms to prevent blocking the semaphore indefinitely
-        kwargs.setdefault("sleep_threshold", 0)
         if len(args) < 1:
-            kwargs["retries"] = 0
+            kwargs.setdefault("retries", _tg_rpc_retries)
         if len(args) < 2:
             kwargs.setdefault("timeout", _tg_rpc_timeout)
+        kwargs.setdefault("sleep_threshold", _read_int_env("TG_SLEEP_THRESHOLD", 120, minimum=0))
 
         async with _get_channel_diff_semaphore:
             max_retries = 2
@@ -230,6 +230,8 @@ class BaseUserWorker(Generic[ConfigT]):
             "api_id": api_id,
             "api_hash": api_hash,
             "loop": loop,
+            "sleep_threshold": _read_int_env("TG_SLEEP_THRESHOLD", 120, minimum=0),
+            "workers": _read_int_env("TG_WORKERS", 16, minimum=1),
         }
         if no_updates is not None:
             client_kwargs["no_updates"] = no_updates
@@ -481,7 +483,24 @@ class BaseUserWorker(Generic[ConfigT]):
                 f"Warning, emoji should be one of {', '.join(DICE_EMOJIS)}",
                 level="WARNING",
             )
-        message = await self.app.send_dice(chat_id, emoji, **kwargs)
+        try:
+            send_timeout = max(float(os.environ.get("TG_SEND_MESSAGE_TIMEOUT", "20") or "20"), 5.0)
+        except (TypeError, ValueError):
+            send_timeout = 20.0
+        try:
+            message = await asyncio.wait_for(
+                self.app.send_dice(chat_id, emoji, **kwargs),
+                timeout=send_timeout,
+            )
+        except TimeoutError:
+            self.log(
+                f"发送骰子超时: {emoji}",
+                level="WARNING",
+                stage="action",
+                event="dice_send_timeout",
+                meta={"chat_id": chat_id, "emoji": emoji, "timeout": send_timeout},
+            )
+            raise
         if message:
             self.log(
                 f"骰子已发送: {emoji}",
@@ -604,6 +623,8 @@ class UserSignerWorkerContext(BaseModel):
     sign_chats: dict  # 签到配置列表, int -> list[SignChatV3]
     chat_messages: dict  # 收到的消息, int -> dict[int, Optional[Message]]
     last_callback_texts: dict  # 最近一次按钮弹窗文案, int -> str
+    event_runners: dict  # 事件驱动签到 runner, int -> SignEventRunner
+    event_tasks: set  # 事件驱动消息处理任务
     waiting_message: Optional[Message] = None  # 正在处理的消息
 
 
@@ -619,6 +640,8 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             sign_chats=defaultdict(list),
             chat_messages=defaultdict(dict),
             last_callback_texts={},
+            event_runners={},
+            event_tasks=set(),
             waiting_message=None,
         )
 
@@ -973,6 +996,33 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             event="chat_execution_started",
             meta={"chat_id": chat.chat_id, "chat_name": getattr(chat, "name", "")},
         )
+        if getattr(self.config, "engine", "event") == "event":
+            runner = SignEventRunner(
+                chat=chat,
+                app=self.app,
+                log=self.log,
+                send_message=self.send_message,
+                send_dice=self.send_dice,
+                request_callback_answer=self.request_callback_answer,
+                get_ai_tools=self.get_ai_tools,
+            )
+            self.context.event_runners[chat.chat_id] = runner
+            try:
+                result = await runner.run()
+            finally:
+                self.context.event_runners.pop(chat.chat_id, None)
+                await self._drain_event_tasks()
+            if result.status not in (EventRunStatus.SUCCESS, EventRunStatus.CHECKED):
+                raise BusinessRetryableError(
+                    f"Event engine failed. chat_id={chat.chat_id}, status={result.status}, message={result.message}"
+                )
+            self.log(
+                f"事件引擎处理完成: {result.status}",
+                stage="action",
+                event="event_engine_completed",
+                meta={"chat_id": chat.chat_id, "status": result.status, "message": result.message},
+            )
+            return None
         for index, action in enumerate(chat.actions, start=1):
             self.log(
                 f"等待处理动作 #{index}: {action}",
@@ -1142,6 +1192,40 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             log=self.log,
         )
 
+    async def _dispatch_event_runner_message(self, message: Message):
+        if not getattr(message, "chat", None):
+            return
+        runner = self.context.event_runners.get(message.chat.id)
+        if runner is None:
+            return
+        task = asyncio.create_task(runner.handle_message(message))
+        self.context.event_tasks.add(task)
+        task.add_done_callback(self._on_event_runner_task_done)
+
+    def _on_event_runner_task_done(self, task: asyncio.Task):
+        self.context.event_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as e:
+            self.log(
+                f"事件引擎后台消息处理失败: {e}",
+                level="ERROR",
+                stage="action",
+                event="event_engine_task_error",
+                meta={"error_type": type(e).__name__},
+            )
+
+    async def _drain_event_tasks(self):
+        tasks = [task for task in self.context.event_tasks if not task.done()]
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self.context.event_tasks.difference_update(tasks)
+
     async def on_message(self, client: Client, message: Message):
         await handle_incoming_message(
             client=client,
@@ -1149,6 +1233,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             context=self.context,
             log=self.log,
         )
+        await self._dispatch_event_runner_message(message)
 
     async def on_edited_message(self, client, message: Message):
         await handle_edited_message(
@@ -1157,6 +1242,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             context=self.context,
             log=self.log,
         )
+        await self._dispatch_event_runner_message(message)
 
     def _clean_text_for_match(self, text: str) -> str:
         return clean_text_for_match(text)
