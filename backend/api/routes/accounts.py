@@ -8,14 +8,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.core.auth import get_current_user
 from backend.core.validators import ValidationError, validate_account_name
 from backend.models.user import User
+from backend.services.sign_tasks import SignTaskService, get_sign_task_service
 from backend.services.telegram import get_telegram_service
 
 router = APIRouter()
@@ -524,6 +525,7 @@ def update_account(
     account_name: str,
     request: AccountUpdateRequest,
     current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     account_name = _valid_account_name(account_name)
     if not get_telegram_service().account_exists(account_name):
@@ -542,9 +544,7 @@ def update_account(
         )
 
         try:
-            from backend.services.sign_tasks import get_sign_task_service
-
-            get_sign_task_service().ensure_account_chat_cache_meta(account_name)
+            sign_task_service.ensure_account_chat_cache_meta(account_name)
         except Exception:
             pass
 
@@ -585,6 +585,8 @@ class AccountLogItem(BaseModel):
     bot_message: Optional[str] = None
     success: bool
     created_at: str
+    flow_event_counts: Dict[str, int] = Field(default_factory=dict)
+    run_summary: Dict[str, Any] = Field(default_factory=dict)
 
 
 def _extract_last_bot_message(item: dict) -> str:
@@ -638,13 +640,14 @@ class ClearAccountLogsResponse(BaseModel):
 
 @router.get("/{account_name}/logs", response_model=list[AccountLogItem])
 def get_account_logs(
-    account_name: str, limit: int = 100, current_user: User = Depends(get_current_user)
+    account_name: str,
+    limit: int = 100,
+    current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     """获取账号的任务执行历史日志"""
-    from backend.services.sign_tasks import get_sign_task_service
-
     account_name = _valid_account_name(account_name)
-    history = get_sign_task_service().get_account_history_logs(account_name)
+    history = sign_task_service.get_account_history_logs(account_name)
 
     logs = []
     for i, item in enumerate(history[:limit]):
@@ -657,6 +660,8 @@ def get_account_logs(
                 or ("执行成功" if item.get("success") else "执行失败"),
                 success=item.get("success", False),
                 created_at=item.get("time", ""),
+                flow_event_counts=item.get("flow_event_counts") or {},
+                run_summary=item.get("run_summary") or {},
             )
         )
 
@@ -673,7 +678,9 @@ def get_account_logs(
 
 @router.post("/{account_name}/logs/clear", response_model=ClearAccountLogsResponse)
 def clear_account_logs(
-    account_name: str, current_user: User = Depends(get_current_user)
+    account_name: str,
+    current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     account_name = _valid_account_name(account_name)
     if not get_telegram_service().account_exists(account_name):
@@ -682,9 +689,7 @@ def clear_account_logs(
             detail="ACCOUNT_NOT_FOUND",
         )
     try:
-        from backend.services.sign_tasks import get_sign_task_service
-
-        result = get_sign_task_service().clear_account_history_logs(account_name)
+        result = sign_task_service.clear_account_history_logs(account_name)
         return ClearAccountLogsResponse(
             success=True,
             cleared=result.get("removed_entries", 0),
@@ -700,15 +705,15 @@ def clear_account_logs(
 
 @router.get("/{account_name}/logs/export")
 def export_account_logs(
-    account_name: str, current_user: User = Depends(get_current_user)
+    account_name: str,
+    current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     """导出账号日志为 txt 文件"""
     from fastapi.responses import Response
 
-    from backend.services.sign_tasks import get_sign_task_service
-
     account_name = _valid_account_name(account_name)
-    history = get_sign_task_service().get_account_history_logs(account_name)
+    history = sign_task_service.get_account_history_logs(account_name)
 
     content = f"Account Logs for: {account_name}\n"
     content += "=" * 40 + "\n\n"

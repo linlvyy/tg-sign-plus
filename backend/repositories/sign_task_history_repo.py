@@ -87,13 +87,29 @@ class DatabaseSignTaskHistoryRepo(SignTaskHistoryRepo):
         try:
             flow_logs = entry.get("flow_logs", [])
             flow_items = entry.get("flow_items", [])
+            if isinstance(flow_items, list):
+                stored_flow_items = [item for item in flow_items if isinstance(item, dict)]
+            else:
+                stored_flow_items = []
+            run_summary = entry.get("run_summary")
+            if isinstance(run_summary, dict) and run_summary:
+                stored_flow_items.append(
+                    {
+                        "ts": entry.get("time", ""),
+                        "level": "info",
+                        "stage": "result",
+                        "event": "run_summary",
+                        "text": "结构化运行摘要",
+                        "meta": run_summary,
+                    }
+                )
             row = SignTaskRun(
                 account_name=account_name,
                 task_name=task_name,
                 success=entry.get("success", False),
                 message=entry.get("message", ""),
                 flow_logs=json.dumps(flow_logs, ensure_ascii=False) if flow_logs else None,
-                flow_items=json.dumps(flow_items, ensure_ascii=False) if flow_items else None,
+                flow_items=json.dumps(stored_flow_items, ensure_ascii=False) if stored_flow_items else None,
                 flow_truncated=entry.get("flow_truncated", False),
                 flow_line_count=entry.get("flow_line_count", 0),
             )
@@ -219,16 +235,38 @@ class DatabaseSignTaskHistoryRepo(SignTaskHistoryRepo):
         else:
             created_at_str = ""
 
+        run_summary, public_flow_items = DatabaseSignTaskHistoryRepo._split_run_summary(flow_items)
+
         return {
             "time": created_at_str,
             "success": row.success,
             "message": row.message or "",
             "account_name": row.account_name,
             "flow_logs": flow_logs,
-            "flow_items": flow_items,
+            "flow_items": public_flow_items,
+            "run_summary": run_summary,
             "flow_truncated": row.flow_truncated,
             "flow_line_count": row.flow_line_count,
         }
+
+    @staticmethod
+    def _extract_run_summary(flow_items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return DatabaseSignTaskHistoryRepo._split_run_summary(flow_items)[0]
+
+    @staticmethod
+    def _split_run_summary(
+        flow_items: List[Dict[str, Any]]
+    ) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        public_items: List[Dict[str, Any]] = []
+        run_summary: Dict[str, Any] = {}
+        for item in flow_items:
+            if isinstance(item, dict) and item.get("event") == "run_summary":
+                meta = item.get("meta")
+                if isinstance(meta, dict):
+                    run_summary = meta
+                continue
+            public_items.append(item)
+        return run_summary, public_items
 
 
 _repo: Optional[SignTaskHistoryRepo] = None

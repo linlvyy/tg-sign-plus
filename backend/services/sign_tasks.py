@@ -11,10 +11,9 @@ import os
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
-from backend.services.sign_task_chat_cache import SignTaskChatCacheService
-from backend.services.sign_task_executor import SignTaskExecutor
 from backend.services.sign_task_history import SignTaskHistoryService
 from backend.services.sign_task_management import SignTaskManagementService
+from backend.services.sign_task_results import task_already_running_result
 
 settings = get_settings()
 
@@ -46,6 +45,7 @@ class SignTaskService:
         self._active_logs: Dict[tuple[str, str], List[str]] = {}  # (account, task) -> logs
         self._active_log_offsets: Dict[tuple[str, str], int] = {}  # (account, task) -> dropped count
         self._active_tasks: Dict[tuple[str, str], bool] = {}  # (account, task) -> running
+        self._starting_tasks: set[tuple[str, str]] = set()
         self._cleanup_tasks: Dict[tuple[str, str], asyncio.Task] = {}
         self._tasks_cache_ref = {"value": None}
         self._account_locks: Dict[str, asyncio.Lock] = {}  # 账号锁
@@ -75,22 +75,38 @@ class SignTaskService:
             append_scheduler_log=self._append_scheduler_log,
         )
         self._management_service.bind_tasks_cache(self._tasks_cache_ref)
-        self._chat_cache_service = SignTaskChatCacheService(
-            self.signs_dir,
-            self._account_locks,
-        )
-        self._executor = SignTaskExecutor(
-            workdir=self.workdir,
-            active_logs=self._active_logs,
-            active_log_offsets=self._active_log_offsets,
-            active_tasks=self._active_tasks,
-            cleanup_tasks=self._cleanup_tasks,
-            account_locks=self._account_locks,
-            account_last_run_end=self._account_last_run_end,
-            account_cooldown_seconds=self._account_cooldown_seconds,
-            get_task=self.get_task,
-            save_run_info=self._save_run_info,
-        )
+        self._chat_cache_service = None
+        self._executor = None
+
+    @property
+    def chat_cache_service(self):
+        if self._chat_cache_service is None:
+            from backend.services.sign_task_chat_cache import SignTaskChatCacheService
+
+            self._chat_cache_service = SignTaskChatCacheService(
+                self.signs_dir,
+                self._account_locks,
+            )
+        return self._chat_cache_service
+
+    @property
+    def executor(self):
+        if self._executor is None:
+            from backend.services.sign_task_executor import SignTaskExecutor
+
+            self._executor = SignTaskExecutor(
+                workdir=self.workdir,
+                active_logs=self._active_logs,
+                active_log_offsets=self._active_log_offsets,
+                active_tasks=self._active_tasks,
+                cleanup_tasks=self._cleanup_tasks,
+                account_locks=self._account_locks,
+                account_last_run_end=self._account_last_run_end,
+                account_cooldown_seconds=self._account_cooldown_seconds,
+                get_task=self._get_task_config,
+                save_run_info=self._save_run_info,
+            )
+        return self._executor
 
     def get_task_history_logs(
         self, task_name: str, account_name: str, limit: int = 20
@@ -126,6 +142,7 @@ class SignTaskService:
         account_name: str = "",
         flow_logs: Optional[List[str]] = None,
         flow_items: Optional[List[Dict[str, Any]]] = None,
+        run_summary: Optional[Dict[str, Any]] = None,
     ):
         """保存任务执行历史"""
         self._history_service.bind_tasks_cache(self._tasks_cache_ref["value"])
@@ -136,6 +153,7 @@ class SignTaskService:
             account_name=account_name,
             flow_logs=flow_logs,
             flow_items=flow_items,
+            run_summary=run_summary,
         )
 
     def _now(self):
@@ -153,6 +171,10 @@ class SignTaskService:
                 'Failed to write scheduler log %s: %s', filename, e
             )
 
+    def invalidate_tasks_cache(self) -> None:
+        """Invalidate cached task list after out-of-band config changes."""
+        self._tasks_cache_ref["value"] = None
+
     def list_tasks(
         self, account_name: Optional[str] = None, force_refresh: bool = False
     ) -> List[Dict[str, Any]]:
@@ -163,6 +185,15 @@ class SignTaskService:
         )
 
     def get_task(
+        self, task_name: str, account_name: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        return self._management_service.get_task(
+            task_name,
+            account_name,
+            self._get_last_run_info_by_name,
+        )
+
+    def _get_task_config(
         self, task_name: str, account_name: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         return self._management_service.get_task(task_name, account_name)
@@ -299,7 +330,7 @@ class SignTaskService:
         auto_refresh_if_expired: bool = False,
         ensure_exists: bool = False,
     ) -> Dict[str, Any]:
-        return await self._chat_cache_service.get_account_chats(
+        return await self.chat_cache_service.get_account_chats(
             account_name,
             force_refresh=force_refresh,
             auto_refresh_if_expired=auto_refresh_if_expired,
@@ -314,7 +345,7 @@ class SignTaskService:
         limit: int = 50,
         offset: int = 0,
     ) -> Dict[str, Any]:
-        return self._chat_cache_service.search_account_chats(
+        return self.chat_cache_service.search_account_chats(
             account_name,
             query,
             limit=limit,
@@ -322,13 +353,13 @@ class SignTaskService:
         )
 
     async def refresh_account_chats(self, account_name: str) -> List[Dict[str, Any]]:
-        return await self._chat_cache_service.refresh_account_chats(account_name)
+        return await self.chat_cache_service.refresh_account_chats(account_name)
 
     def get_account_chat_cache(self, account_name: str) -> Dict[str, Any]:
-        return self._chat_cache_service.get_account_chat_cache(account_name)
+        return self.chat_cache_service.get_account_chat_cache(account_name)
 
     def ensure_account_chat_cache_meta(self, account_name: str) -> Dict[str, Any]:
-        return self._chat_cache_service.ensure_account_cache_meta(account_name)
+        return self.chat_cache_service.ensure_account_cache_meta(account_name)
 
     async def run_task(self, account_name: str, task_name: str) -> Dict[str, Any]:
         """
@@ -339,23 +370,49 @@ class SignTaskService:
     async def start_task_in_background(
         self, account_name: str, task_name: str
     ) -> Dict[str, Any]:
-        task = self.get_task(task_name, account_name=account_name)
+        task = self._get_task_config(task_name, account_name=account_name)
         if not task:
             raise ValueError(f"任务 {task_name} 不存在")
 
+        task_key = self._task_key(account_name, task_name)
         if self.is_task_running(task_name, account_name=account_name):
-            return {
-                "success": False,
-                "output": "",
-                "error": "任务已经在运行中",
-                "started": False,
-                "code": "TASK_ALREADY_RUNNING",
-            }
+            return task_already_running_result()
 
         async def _run_in_background() -> None:
-            await self.run_task_with_logs(account_name, task_name)
+            try:
+                await self.run_task_with_logs(account_name, task_name)
+            except Exception:
+                logging.getLogger("backend.sign_tasks").exception(
+                    "后台签到任务异常退出: account=%s task=%s",
+                    account_name,
+                    task_name,
+                )
+                self._active_tasks[task_key] = False
+                raise
+            finally:
+                self._starting_tasks.discard(task_key)
 
-        asyncio.create_task(_run_in_background())
+        self._starting_tasks.add(task_key)
+        background_task = asyncio.create_task(
+            _run_in_background(),
+            name=f"sign-task:{account_name}:{task_name}",
+        )
+
+        def _consume_background_result(task: asyncio.Task) -> None:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logging.getLogger("backend.sign_tasks").warning(
+                    "后台签到任务被取消: account=%s task=%s",
+                    account_name,
+                    task_name,
+                )
+            except Exception:
+                # The coroutine already logged the traceback; consuming the result
+                # prevents asyncio from reporting an unhandled task exception.
+                pass
+
+        background_task.add_done_callback(_consume_background_result)
         return {
             "success": True,
             "output": "",
@@ -395,13 +452,20 @@ class SignTaskService:
     def is_task_running(self, task_name: str, account_name: Optional[str] = None) -> bool:
         """检查任务是否正在运行"""
         if account_name:
-            return self._active_tasks.get(self._task_key(account_name, task_name), False)
-        return any(key[1] == task_name for key, running in self._active_tasks.items() if running)
+            task_key = self._task_key(account_name, task_name)
+            return (
+                task_key in self._starting_tasks
+                or self._active_tasks.get(task_key, False)
+            )
+        return (
+            any(key[1] == task_name for key in self._starting_tasks)
+            or any(key[1] == task_name for key, running in self._active_tasks.items() if running)
+        )
 
     async def run_task_with_logs(
         self, account_name: str, task_name: str
     ) -> Dict[str, Any]:
-        return await self._executor.run_task_with_logs(account_name, task_name)
+        return await self.executor.run_task_with_logs(account_name, task_name)
 
 
 # 创建全局实例

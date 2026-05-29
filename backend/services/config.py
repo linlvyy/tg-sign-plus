@@ -10,7 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from backend.core.config import get_settings
-from backend.services.sign_task_event_presets import normalize_event_task_config
+from backend.services.sign_task_event_presets import (
+    normalize_event_task_config,
+    validate_writable_event_task_config,
+)
 from backend.utils.storage import is_writable_dir
 
 settings = get_settings()
@@ -109,6 +112,7 @@ class ConfigService:
             "range_start": task.get("range_start", ""),
             "range_end": task.get("range_end", ""),
         }
+        config = normalize_event_task_config(config)
         if task.get("last_run"):
             config["last_run"] = task["last_run"]
         return config
@@ -119,6 +123,7 @@ class ConfigService:
         if not account_name:
             return False
         try:
+            validate_writable_event_task_config(config)
             config = normalize_event_task_config(config)
             self._sign_config_repo.save_config(task_name, account_name, config)
             return True
@@ -308,23 +313,6 @@ class ConfigService:
                          result["settings_imported"] += 1
                 except Exception as e:
                     result["errors"].append(f"Failed to import Telegram config: {e}")
-
-            # 关键修复：清除 SignTaskService 缓存，否则前端刷新也看不到新任务
-            try:
-                from backend.services.sign_tasks import get_sign_task_service
-                get_sign_task_service()._tasks_cache = None
-
-                # 可选：触发调度同步？
-                # 如果导入了新任务，调度器并不知道。
-                # 只有 _tasks_cache 清除后，下次调用 list_tasks 才会读文件，但调度器是内存常驻的。
-                # 我们应该调用 sync_jobs!
-
-                # 由于 sync_jobs 是 async 的，而这里是同步方法，可能不太好直接调。
-                # 但 FastAPI 路由是 async 的，我们可以在路由层调用 sync_jobs。
-                # 这里的职责主要是文件操作。清理 cache 是必须的。
-                pass
-            except Exception as e:
-                 print(f"Failed to clear cache: {e}")
 
         except (json.JSONDecodeError, KeyError) as e:
             result["errors"].append(f"Invalid JSON format: {str(e)}")

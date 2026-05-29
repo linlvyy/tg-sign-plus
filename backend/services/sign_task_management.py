@@ -3,7 +3,15 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from backend.services.sign_task_event_presets import normalize_event_task_config
+from backend.services.sign_task_event_presets import (
+    normalize_event_task_config,
+    validate_writable_event_task_config,
+)
+from backend.services.sign_task_run_summary import (
+    build_flow_event_counts,
+    build_run_summary,
+    sanitize_public_run_summary,
+)
 
 
 class SignTaskManagementService:
@@ -42,10 +50,77 @@ class SignTaskManagementService:
                 self._invalidate_tasks_cache()
         return normalized
 
+    @staticmethod
+    def _attach_last_run(
+        task: Dict[str, Any],
+        get_last_run_info,
+    ) -> Dict[str, Any]:
+        if not isinstance(task, dict):
+            return task
+        if not callable(get_last_run_info):
+            SignTaskManagementService._normalize_cached_last_run(task)
+            return task
+        task_name = task.get("name")
+        if not task_name:
+            SignTaskManagementService._normalize_cached_last_run(task)
+            return task
+        try:
+            latest = get_last_run_info(task_name, task.get("account_name", ""))
+        except Exception:
+            logging.getLogger("backend.sign_tasks").warning(
+                "Failed to load latest sign task run: %s/%s",
+                task.get("account_name", ""),
+                task_name,
+                exc_info=True,
+            )
+            SignTaskManagementService._normalize_cached_last_run(task)
+            return task
+        if latest:
+            task["last_run"] = latest
+        else:
+            SignTaskManagementService._normalize_cached_last_run(task)
+        return task
+
+    @staticmethod
+    def _normalize_cached_last_run(task: Dict[str, Any]) -> None:
+        last_run = task.get("last_run")
+        if last_run is None:
+            return
+        if not isinstance(last_run, dict):
+            task.pop("last_run", None)
+            return
+
+        flow_items = last_run.get("flow_items")
+        if not isinstance(flow_items, list):
+            flow_items = []
+        flow_items = [item for item in flow_items if isinstance(item, dict)]
+
+        run_summary = sanitize_public_run_summary(last_run.get("run_summary"))
+        if not run_summary:
+            run_summary = build_run_summary(
+                flow_items,
+                success=bool(last_run.get("success", False)),
+                error="" if bool(last_run.get("success", False)) else str(last_run.get("message", "") or ""),
+            )
+
+        normalized = dict(last_run)
+        normalized["success"] = bool(last_run.get("success", False))
+        normalized["message"] = str(last_run.get("message", "") or "")
+        normalized["run_summary"] = run_summary
+        if "flow_event_counts" not in normalized:
+            normalized["flow_event_counts"] = build_flow_event_counts(flow_items)
+        task["last_run"] = normalized
+
     def list_tasks(self, get_last_run_info, account_name: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
         cache = self._tasks_cache_ref["value"] if self._tasks_cache_ref is not None else None
         if cache is not None and not force_refresh:
-            normalized_cache = [self._normalize_loaded_task(task) for task in cache]
+            normalized_cache = [
+                self._attach_last_run(
+                    self._normalize_loaded_task(task),
+                    get_last_run_info,
+                )
+                for task in cache
+            ]
             if self._tasks_cache_ref is not None:
                 self._tasks_cache_ref["value"] = normalized_cache
             if account_name:
@@ -54,12 +129,13 @@ class SignTaskManagementService:
 
         try:
             tasks = self._config_repo.list_configs(account_name=None)
-            tasks = [self._normalize_loaded_task(task) for task in tasks]
-            for task in tasks:
-                if not task.get("last_run"):
-                    task["last_run"] = get_last_run_info(
-                        task["name"], task.get("account_name", "")
-                    )
+            tasks = [
+                self._attach_last_run(
+                    self._normalize_loaded_task(task),
+                    get_last_run_info,
+                )
+                for task in tasks
+            ]
             if self._tasks_cache_ref is not None:
                 self._tasks_cache_ref["value"] = tasks
             if account_name:
@@ -68,11 +144,19 @@ class SignTaskManagementService:
         except Exception:
             return []
 
-    def get_task(self, task_name: str, account_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def get_task(
+        self,
+        task_name: str,
+        account_name: Optional[str] = None,
+        get_last_run_info=None,
+    ) -> Optional[Dict[str, Any]]:
         task = self._config_repo.get_config(task_name, account_name)
         if not task:
             return None
-        return self._normalize_loaded_task(task)
+        return self._attach_last_run(
+            self._normalize_loaded_task(task),
+            get_last_run_info,
+        )
 
     def create_task(
         self,
@@ -108,7 +192,7 @@ class SignTaskManagementService:
             "sign_at": sign_at,
             "random_seconds": random_seconds,
             "sign_interval": sign_interval,
-            "retry_count": max(int(retry_count or 0), 0),
+            "retry_count": retry_count,
             "engine": "event",
             "chats": chats,
             "execution_mode": execution_mode,
@@ -116,6 +200,7 @@ class SignTaskManagementService:
             "range_end": range_end,
             "enabled": True,
         }
+        validate_writable_event_task_config(config)
         config = normalize_event_task_config(config)
         normalized_chats = config["chats"]
 
@@ -129,7 +214,7 @@ class SignTaskManagementService:
             add_or_update_sign_task_job(
                 account_name,
                 task_name,
-                range_start if execution_mode == "range" else sign_at,
+                config.get("range_start") if config.get("execution_mode") == "range" else config["sign_at"],
                 enabled=True,
             )
         except Exception:
@@ -138,16 +223,16 @@ class SignTaskManagementService:
         return {
             "name": task_name,
             "account_name": account_name,
-            "sign_at": sign_at,
-            "random_seconds": random_seconds,
-            "sign_interval": sign_interval,
+            "sign_at": config["sign_at"],
+            "random_seconds": config["random_seconds"],
+            "sign_interval": config["sign_interval"],
             "retry_count": config["retry_count"],
             "engine": config["engine"],
             "chats": normalized_chats,
             "enabled": True,
-            "execution_mode": execution_mode,
-            "range_start": range_start,
-            "range_end": range_end,
+            "execution_mode": config.get("execution_mode", "fixed"),
+            "range_start": config.get("range_start", ""),
+            "range_end": config.get("range_end", ""),
             "next_scheduled_at": None,
         }
 
@@ -184,7 +269,7 @@ class SignTaskManagementService:
             "sign_at": sign_at if sign_at is not None else existing["sign_at"],
             "random_seconds": random_seconds if random_seconds is not None else existing["random_seconds"],
             "sign_interval": sign_interval if sign_interval is not None else existing["sign_interval"],
-            "retry_count": max(int(retry_count), 0) if retry_count is not None else existing.get("retry_count", 0),
+            "retry_count": retry_count if retry_count is not None else existing.get("retry_count", 0),
             "engine": "event",
             "chats": next_chats,
             "execution_mode": execution_mode if execution_mode is not None else existing.get("execution_mode", "fixed"),
@@ -192,6 +277,7 @@ class SignTaskManagementService:
             "range_end": range_end if range_end is not None else existing.get("range_end", ""),
             "enabled": bool(existing.get("enabled", True)),
         }
+        validate_writable_event_task_config(config)
         config = normalize_event_task_config(config)
         normalized_chats = config["chats"]
 

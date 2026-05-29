@@ -6,6 +6,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from backend.services.sign_task_diagnostics import analyze_sign_task_run
 from backend.services.sign_task_event_presets import normalize_event_task_config
+from backend.services.sign_task_run_summary import (
+    build_flow_event_counts,
+    build_run_summary,
+    sanitize_public_run_summary,
+)
 
 
 def _text(value: Any) -> str:
@@ -89,6 +94,35 @@ def _parse_time(value: Any) -> datetime | None:
         return None
 
 
+def _event_counts_from_entry(entry: Dict[str, Any]) -> Dict[str, int]:
+    raw_counts = entry.get("flow_event_counts")
+    if isinstance(raw_counts, dict) and raw_counts:
+        counts: Dict[str, int] = {}
+        for key, value in raw_counts.items():
+            event_name = str(key or "")
+            if not event_name:
+                continue
+            try:
+                count = int(value)
+            except (TypeError, ValueError):
+                continue
+            if count > 0:
+                counts[event_name] = count
+        return counts
+    return build_flow_event_counts(entry.get("flow_items") or [])
+
+
+def _run_summary_from_entry(entry: Dict[str, Any], flow_items: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    raw_summary = entry.get("run_summary")
+    if isinstance(raw_summary, dict) and raw_summary:
+        return sanitize_public_run_summary(raw_summary)
+    return build_run_summary(
+        flow_items,
+        success=bool(entry.get("success", False)),
+        error="" if entry.get("success", False) else str(entry.get("message", "") or ""),
+    )
+
+
 def _entry_summary(
     *,
     entry: Dict[str, Any],
@@ -96,8 +130,9 @@ def _entry_summary(
     now: datetime,
     max_age_hours: float | None,
 ) -> Dict[str, Any]:
+    flow_items = entry.get("flow_items") or []
     diagnostics = analyze_sign_task_run(
-        flow_items=entry.get("flow_items") or [],
+        flow_items=flow_items,
         task_config={"engine": task.get("engine", "event"), "chats": task.get("chats") or []},
         success=bool(entry.get("success", False)),
     )
@@ -124,6 +159,8 @@ def _entry_summary(
         "age_hours": age_hours,
         "fresh": fresh,
         "message": entry.get("message", ""),
+        "event_counts": _event_counts_from_entry(entry),
+        "run_summary": _run_summary_from_entry(entry, flow_items),
         "diagnostics": diagnostics,
     }
 
@@ -138,9 +175,9 @@ def generate_canary_report(
     now: datetime | None = None,
     source: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Compatibility wrapper for the generic event-engine health report."""
+    """Compatibility wrapper for the generic event-engine diagnostic report."""
 
-    report = generate_event_engine_health_report(
+    report = generate_event_engine_diagnostic_report(
         config_repo=config_repo,
         history_repo=history_repo,
         account_name=account_name,
@@ -176,7 +213,7 @@ def _generic_config_checks(task: Dict[str, Any]) -> list[Dict[str, str]]:
     ]
 
 
-def _event_health_summary(task_report: Dict[str, Any]) -> str:
+def _event_diagnostic_summary(task_report: Dict[str, Any]) -> str:
     status = str(task_report.get("status") or "missing")
     if status == "pass":
         return "最新历史诊断通过"
@@ -198,7 +235,7 @@ def _event_health_summary(task_report: Dict[str, Any]) -> str:
     return "没有可诊断的历史记录"
 
 
-def _event_health_overall_status(targets: Sequence[Dict[str, Any]]) -> str:
+def _event_diagnostic_overall_status(targets: Sequence[Dict[str, Any]]) -> str:
     statuses = [str(target.get("status") or "missing") for target in targets]
     if not statuses:
         return "missing"
@@ -209,7 +246,7 @@ def _event_health_overall_status(targets: Sequence[Dict[str, Any]]) -> str:
     return "pass"
 
 
-def generate_event_engine_health_report(
+def generate_event_engine_diagnostic_report(
     *,
     config_repo,
     history_repo,
@@ -219,7 +256,7 @@ def generate_event_engine_health_report(
     now: datetime | None = None,
     source: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Build a generic event-engine health report from actual task configs."""
+    """Build a generic event-engine diagnostic report from actual task configs."""
 
     history_limit = max(int(history_limit or 1), 1)
     if max_age_hours is not None:
@@ -248,6 +285,8 @@ def generate_event_engine_health_report(
         ]
         latest_status = run_reports[0]["status"] if run_reports else "missing"
         latest_time = run_reports[0].get("time") if run_reports else ""
+        latest_event_counts = run_reports[0].get("event_counts") if run_reports else {}
+        latest_run_summary = run_reports[0].get("run_summary") if run_reports else {}
         config_checks = _generic_config_checks(task)
         config_status = _check_status(config_checks)
         task_status = _target_status(config_status, latest_status)
@@ -260,6 +299,8 @@ def generate_event_engine_health_report(
             "config_checks": config_checks,
             "run_status": latest_status,
             "latest_time": latest_time,
+            "latest_event_counts": latest_event_counts,
+            "latest_run_summary": latest_run_summary,
             "latest_summary": _latest_run_summary(run_reports),
             "runs": run_reports,
         }
@@ -268,13 +309,13 @@ def generate_event_engine_health_report(
                 "id": f"{task_account}/{task_name}",
                 "label": task_name,
                 "status": task_status,
-                "summary": _event_health_summary(task_report),
+                "summary": _event_diagnostic_summary(task_report),
                 "tasks": [task_report],
             }
         )
 
     report = {
-        "status": _event_health_overall_status(target_reports),
+        "status": _event_diagnostic_overall_status(target_reports),
         "generated_at": now.isoformat(),
         "max_age_hours": max_age_hours,
         "task_count": len(tasks),
@@ -285,6 +326,29 @@ def generate_event_engine_health_report(
     if not tasks:
         report["hint"] = "没有扫描到任务配置。"
     return report
+
+
+def generate_event_engine_health_report(
+    *,
+    config_repo,
+    history_repo,
+    account_name: str | None = None,
+    history_limit: int = 1,
+    max_age_hours: float | None = 36,
+    now: datetime | None = None,
+    source: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Compatibility wrapper for the generic event-engine diagnostic report."""
+
+    return generate_event_engine_diagnostic_report(
+        config_repo=config_repo,
+        history_repo=history_repo,
+        account_name=account_name,
+        history_limit=history_limit,
+        max_age_hours=max_age_hours,
+        now=now,
+        source=source,
+    )
 
 
 def _latest_run_summary(run_reports: Sequence[Dict[str, Any]]) -> str:

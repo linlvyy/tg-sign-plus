@@ -19,9 +19,14 @@ from backend.utils.tg_session import (
     get_account_session_string,
     get_global_semaphore,
 )
-from tg_signer.core import get_client
 
 settings = get_settings()
+
+
+def _get_client_factory():
+    from tg_signer.client_manager import get_client
+
+    return get_client
 
 
 class SignTaskChatCacheService:
@@ -295,7 +300,7 @@ class SignTaskChatCacheService:
             "proxy": proxy_dict,
             "no_updates": True,
         }
-        client = get_client(**client_kwargs)
+        client = _get_client_factory()(**client_kwargs)
 
         chats: List[Dict[str, Any]] = []
         logger = logging.getLogger("backend")

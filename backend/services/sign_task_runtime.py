@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -9,43 +8,22 @@ from zoneinfo import ZoneInfo
 from tg_signer.ai_tools import OpenAIConfig
 from tg_signer.core import UserSigner
 
-from backend.services.sign_task_event_presets import normalize_event_task_config
-from backend.services.task_flow_logger import TaskFlowLogger
-
-
-class TaskLogHandler(logging.Handler):
-    """将运行日志实时写入文本列表和结构化步骤流。"""
-
-    def __init__(
-        self,
-        log_list: List[str],
-        flow_items: List[Dict[str, object]],
-        offset_ref: Dict[str, int],
-        max_lines: int = 1000,
-    ):
-        super().__init__()
-        self.flow_logger = TaskFlowLogger(log_list, flow_items, offset_ref, max_lines=max_lines)
-
-    def emit(self, record):
-        try:
-            text = record.getMessage()
-            stage = getattr(record, "flow_stage", "message")
-            event = getattr(record, "flow_event", "log")
-            level = record.levelname.lower()
-            meta = getattr(record, "flow_meta", None)
-            self.flow_logger.append(
-                text,
-                level=level,
-                stage=stage,
-                event=event,
-                meta=meta,
-            )
-        except Exception:
-            self.handleError(record)
+from backend.services.sign_task_event_presets import (
+    normalize_event_task_config,
+    validate_writable_event_task_config,
+)
+from backend.services.sign_task_log_handler import TaskLogHandler
 
 
 class BackendUserSigner(UserSigner):
     """后端专用 UserSigner，适配数据库配置并禁止交互输入。"""
+
+    def __init__(self, *args, chat_cache_loader=None, **kwargs):
+        super().__init__(
+            *args,
+            chat_cache_loader=chat_cache_loader or self._load_backend_chat_cache,
+            **kwargs,
+        )
 
     async def login(self, num_of_dialogs=0, print_chat=False):
         self.log("开始登录...")
@@ -70,6 +48,32 @@ class BackendUserSigner(UserSigner):
             "flow_meta": meta or {},
         })
         super().log(msg, level=level, extra=extra, **kwargs)
+
+    @staticmethod
+    def _load_backend_chat_cache(account_name: str) -> List[dict]:
+        from backend.core.database import get_session_local
+        from backend.models.account_chat_cache import AccountChatCacheItem
+
+        db = get_session_local()()
+        try:
+            rows = (
+                db.query(AccountChatCacheItem)
+                .filter(AccountChatCacheItem.account_name == account_name)
+                .order_by(AccountChatCacheItem.title.asc(), AccountChatCacheItem.chat_id.asc())
+                .all()
+            )
+            return [
+                {
+                    "id": int(row.chat_id),
+                    "title": row.title,
+                    "username": row.username,
+                    "type": row.chat_type,
+                    "first_name": row.first_name,
+                }
+                for row in rows
+            ]
+        finally:
+            db.close()
 
     @staticmethod
     def _load_backend_ai_config() -> Optional[OpenAIConfig]:
@@ -147,6 +151,7 @@ class BackendUserSigner(UserSigner):
         if not isinstance(payload, dict):
             raise ValueError("任务配置必须为 JSON 对象")
         payload["account_name"] = self._account
+        validate_writable_event_task_config(payload)
         payload = normalize_event_task_config(payload)
         self._get_config_repo().save_config(self.task_name, self._account, payload)
         self.config = None

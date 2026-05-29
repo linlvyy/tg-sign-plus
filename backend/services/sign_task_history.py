@@ -8,6 +8,11 @@ from backend.core.config import get_settings
 from backend.services.config import get_config_service
 from backend.services.sign_task_diagnostics import analyze_sign_task_run
 from backend.services.sign_task_event_presets import normalize_event_task_config
+from backend.services.sign_task_run_summary import (
+    build_flow_event_counts,
+    build_run_summary,
+    sanitize_public_run_summary,
+)
 
 settings = get_settings()
 
@@ -92,6 +97,26 @@ class SignTaskHistoryService:
             )
         return trimmed
 
+    @staticmethod
+    def _normalize_run_summary(value: Any) -> Dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+        normalized: Dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, dict):
+                nested = {
+                    str(nested_key): nested_value
+                    if isinstance(nested_value, (str, int, float, bool)) or nested_value is None
+                    else str(nested_value)
+                    for nested_key, nested_value in item.items()
+                }
+                normalized[str(key)] = nested
+            elif isinstance(item, (str, int, float, bool)) or item is None:
+                normalized[str(key)] = item
+            else:
+                normalized[str(key)] = str(item)
+        return sanitize_public_run_summary(normalized)
+
     def _get_log_retention_days(self) -> int:
         try:
             value = get_config_service().get_global_settings().get("log_retention_days", 7)
@@ -123,28 +148,54 @@ class SignTaskHistoryService:
         self.prune_expired_history_logs()
         history = self.load_history_entries(task_name, account_name=account_name)
         result: List[Dict[str, Any]] = []
+        task_config = self._find_task_config(task_name, account_name)
         for item in history[:limit]:
-            flow_logs = item.get("flow_logs")
-            if not isinstance(flow_logs, list):
-                flow_logs = []
-            flow_items = self._normalize_flow_items(item.get("flow_items"))
-            task_config = self._find_task_config(task_name, account_name)
-
             result.append(
-                {
-                    "time": item.get("time", ""),
-                    "success": bool(item.get("success", False)),
-                    "message": item.get("message", "") or "",
-                    "flow_logs": [str(line) for line in flow_logs],
-                    "flow_items": flow_items,
-                    "flow_truncated": bool(item.get("flow_truncated", False)),
-                    "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
-                    "diagnostics": analyze_sign_task_run(
-                        flow_items=flow_items,
-                        task_config=task_config,
-                        success=bool(item.get("success", False)),
-                    ),
-                }
+                self._normalize_run_entry(
+                    item,
+                    task_config=task_config,
+                    include_diagnostics=True,
+                )
+            )
+        return result
+
+    def _normalize_run_entry(
+        self,
+        item: Dict[str, Any],
+        *,
+        task_config: Optional[Dict[str, Any]] = None,
+        include_diagnostics: bool = False,
+    ) -> Dict[str, Any]:
+        flow_logs = item.get("flow_logs")
+        if not isinstance(flow_logs, list):
+            flow_logs = []
+        flow_items = self._normalize_flow_items(item.get("flow_items"))
+        success = bool(item.get("success", False))
+        message = str(item.get("message", "") or "")
+        run_summary = self._normalize_run_summary(item.get("run_summary"))
+        if not run_summary:
+            run_summary = build_run_summary(
+                flow_items,
+                success=success,
+                error="" if success else message,
+            )
+
+        result = {
+            "time": item.get("time", ""),
+            "success": success,
+            "message": message,
+            "flow_logs": [str(line) for line in flow_logs],
+            "flow_items": flow_items,
+            "flow_event_counts": build_flow_event_counts(flow_items),
+            "flow_truncated": bool(item.get("flow_truncated", False)),
+            "flow_line_count": int(item.get("flow_line_count", len(flow_logs))),
+            "run_summary": run_summary,
+        }
+        if include_diagnostics:
+            result["diagnostics"] = analyze_sign_task_run(
+                flow_items=flow_items,
+                task_config=task_config,
+                success=success,
             )
         return result
 
@@ -183,7 +234,16 @@ class SignTaskHistoryService:
 
     def get_account_history_logs(self, account_name: str) -> List[Dict[str, Any]]:
         self.prune_expired_history_logs()
-        return self._history_repo.get_account_history(account_name)
+        history = self._history_repo.get_account_history(account_name)
+        result: List[Dict[str, Any]] = []
+        for item in history:
+            if not isinstance(item, dict):
+                continue
+            normalized = self._normalize_run_entry(item)
+            normalized["task_name"] = item.get("task_name", "")
+            normalized["account_name"] = item.get("account_name", account_name)
+            result.append(normalized)
+        return result
 
     def clear_account_history_logs(self, account_name: str, tasks: List[Dict[str, Any]]) -> Dict[str, int]:
         for task in tasks:
@@ -200,7 +260,10 @@ class SignTaskHistoryService:
         return self._history_repo.clear_account_history(account_name)
 
     def get_last_run_info(self, task_name: str, account_name: str = "") -> Optional[Dict[str, Any]]:
-        return self._history_repo.get_latest(task_name, account_name)
+        entry = self._history_repo.get_latest(task_name, account_name)
+        if not isinstance(entry, dict):
+            return None
+        return self._normalize_run_entry(entry)
 
     def save_run_info(
         self,
@@ -210,9 +273,17 @@ class SignTaskHistoryService:
         account_name: str = "",
         flow_logs: Optional[List[str]] = None,
         flow_items: Optional[List[Dict[str, Any]]] = None,
+        run_summary: Optional[Dict[str, Any]] = None,
     ) -> None:
         normalized_logs, flow_truncated, flow_line_count = self._normalize_flow_logs(flow_logs)
         normalized_items = self._normalize_flow_items(flow_items)
+        normalized_summary = self._normalize_run_summary(run_summary)
+        if not normalized_summary:
+            normalized_summary = build_run_summary(
+                normalized_items,
+                success=success,
+                error="" if success else message,
+            )
 
         new_entry = {
             "time": self._now_isoformat(),
@@ -221,8 +292,10 @@ class SignTaskHistoryService:
             "account_name": account_name,
             "flow_logs": normalized_logs,
             "flow_items": normalized_items,
+            "flow_event_counts": build_flow_event_counts(normalized_items),
             "flow_truncated": flow_truncated,
             "flow_line_count": flow_line_count,
+            "run_summary": normalized_summary,
         }
 
         self.prune_expired_history_logs()

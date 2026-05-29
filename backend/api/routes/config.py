@@ -6,11 +6,12 @@ import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictBool
 
 from backend.core.auth import get_current_user
 from backend.models.user import User
 from backend.services.config import get_config_service
+from backend.services.sign_tasks import SignTaskService, get_sign_task_service
 
 router = APIRouter()
 
@@ -23,11 +24,9 @@ def _mask_secret(value: str | None) -> str | None:
     return f"{value[:4]}{'*' * (len(value) - 8)}{value[-4:]}"
 
 
-def _clear_sign_task_cache() -> None:
+def _invalidate_sign_task_cache(service: SignTaskService) -> None:
     try:
-        from backend.services.sign_tasks import get_sign_task_service
-
-        get_sign_task_service()._tasks_cache = None
+        service.invalidate_tasks_cache()
     except Exception:
         # Best-effort cache invalidation; import should still succeed.
         pass
@@ -53,7 +52,7 @@ class ImportTaskResponse(BaseModel):
 
 class ImportAllRequest(BaseModel):
     config_json: str
-    overwrite: bool = False
+    overwrite: StrictBool = False
 
 
 class ImportAllResponse(BaseModel):
@@ -116,7 +115,9 @@ def export_sign_task(
 
 @router.post("/import/sign", response_model=ImportTaskResponse)
 async def import_sign_task(
-    request: ImportTaskRequest, current_user: User = Depends(get_current_user)
+    request: ImportTaskRequest,
+    current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     try:
         service = get_config_service()
@@ -134,7 +135,7 @@ async def import_sign_task(
 
         from backend.scheduler import sync_jobs
 
-        _clear_sign_task_cache()
+        _invalidate_sign_task_cache(sign_task_service)
         await sync_jobs()
 
         return ImportTaskResponse(
@@ -171,7 +172,9 @@ def export_all_configs(current_user: User = Depends(get_current_user)):
 
 @router.post("/import/all", response_model=ImportAllResponse)
 async def import_all_configs(
-    request: ImportAllRequest, current_user: User = Depends(get_current_user)
+    request: ImportAllRequest,
+    current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     try:
         result = get_config_service().import_all_configs(
@@ -190,7 +193,7 @@ async def import_all_configs(
 
         from backend.scheduler import sync_jobs
 
-        _clear_sign_task_cache()
+        _invalidate_sign_task_cache(sign_task_service)
         await sync_jobs()
 
         return ImportAllResponse(
@@ -211,6 +214,7 @@ async def delete_sign_task(
     task_name: str,
     account_name: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    sign_task_service: SignTaskService = Depends(get_sign_task_service),
 ):
     try:
         success = get_config_service().delete_sign_config(
@@ -224,7 +228,7 @@ async def delete_sign_task(
 
         from backend.scheduler import sync_jobs
 
-        _clear_sign_task_cache()
+        _invalidate_sign_task_cache(sign_task_service)
         await sync_jobs()
 
         return {"success": True, "message": f"Task {task_name} deleted"}

@@ -133,7 +133,7 @@ class TelegramService:
         2. 使用单次 get_me 探活，避免执行重操作。
         3. 将“会话失效”与“临时网络错误”分开，前端可据此决定是否引导重新登录。
         """
-        from tg_signer.core import get_client
+        from tg_signer.client_manager import get_client
 
         checked_at = datetime.utcnow().isoformat() + "Z"
 
@@ -326,7 +326,7 @@ class TelegramService:
             是否成功删除
         """
         # 确保释放资源
-        from tg_signer.core import close_client_by_name
+        from tg_signer.client_manager import close_client_by_name
 
         # 尝试关闭 active client
         try:
@@ -344,7 +344,7 @@ class TelegramService:
         try:
             from backend.services.sign_tasks import get_sign_task_service
 
-            chat_service = get_sign_task_service()._chat_cache_service
+            chat_service = get_sign_task_service().chat_cache_service
             db = chat_service._get_db()
             try:
                 db.query(AccountChatCacheItem).filter(
@@ -396,7 +396,7 @@ class TelegramService:
         from pyrogram import Client
         from pyrogram.errors import FloodWait, PhoneNumberInvalid
 
-        from tg_signer.core import close_client_by_name
+        from tg_signer.client_manager import close_client_by_name
 
         account_lock = get_account_lock(account_name)
         global_semaphore = get_global_semaphore()
@@ -879,7 +879,7 @@ class TelegramService:
         from pyrogram import Client, handlers, raw
         from pyrogram.errors import FloodWait
 
-        from tg_signer.core import close_client_by_name
+        from tg_signer.client_manager import close_client_by_name
 
         account_lock = get_account_lock(account_name)
         global_semaphore = get_global_semaphore()
