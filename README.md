@@ -403,6 +403,8 @@ tg-signer list my_account
 | `TG_SUCCESS_ASSERT_TIMEOUT` | 签到成功关键字等待秒数 | `30` |
 | `TG_AI_REQUEST_TIMEOUT` | AI/OCR/视觉识别单次请求超时秒数 | `45` |
 | `TG_CONNECT_TIMEOUT` | Telegram 连接/认证阶段超时秒数 | `20` |
+| `SIGN_TASK_ACCOUNT_LOCK_TIMEOUT` | 签到任务等待同账号执行锁的最长秒数 | `300` |
+| `SIGN_TASK_GLOBAL_CONCURRENCY_TIMEOUT` | 签到任务等待全局并发槽的最长秒数 | `300` |
 | `TG_CONNECT_RETRIES` | Telegram 连接/认证阶段超时或网络错误重试次数 | `3` |
 | `TG_CONNECT_RETRY_WAIT` | Telegram 连接/认证阶段重试等待秒数 | `3` |
 | `TG_TCP_TIMEOUT` | Telegram 底层 TCP 连接超时秒数 | `8` |
@@ -496,9 +498,9 @@ tg-signer list my_account
 
 启动前历史扫描只消费明确结果消息和可回复的图片验证码；旧菜单按钮、图片选项、计算题点击和文本计算题不会推进当前流程，避免旧 callback 或旧题目跳过 fresh 入口命令。运行期间的历史补漏仍会处理本次入口之后的新消息和已跟踪消息编辑。
 
-事件引擎健康诊断：
+事件引擎诊断报告：
 
-任务历史记录会保存结构化 `flow_items`，并自动生成 `diagnostics` 诊断摘要。后台历史弹窗会展示“诊断通过 / 需观察 / 诊断失败”和每个检查项。用户界面的事件引擎健康面板会基于当前账号真实任务配置和最近运行历史汇总，不绑定任何特定 bot。CLI canary 是兼容入口，输出的也是当前任务的通用事件引擎健康诊断。做回归时重点看：
+任务历史记录会保存结构化 `flow_items`，并自动生成 `diagnostics` 诊断摘要。后台历史弹窗会展示“诊断通过 / 需观察 / 诊断失败”和每个检查项。CLI canary 与 API 报告会基于当前账号真实任务配置和最近运行历史汇总，不绑定任何特定 bot，也不是独立总览模块。做回归时重点看：
 
 - `事件引擎启动`、预期按钮点击、验证码识别/回复、成功/已签到结果命中是否通过。
 - `可信按钮超时后继续推进` 是否通过，用于验证“签到”“我不是机器人”这类 callback timeout 不会卡死。

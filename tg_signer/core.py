@@ -10,7 +10,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from datetime import time as dt_time
-from typing import Generic, List, Optional, Type, TypeVar, Union
+from typing import Callable, Generic, List, Optional, Type, TypeVar, Union
 from urllib import parse
 
 import httpx
@@ -48,7 +48,7 @@ from .notification.server_chan import sc_send
 from .scheduled_messages import get_scheduled_messages, schedule_messages
 from .text_cleaners import clean_text_for_match, clean_text_for_send
 from .utils import UserInput, print_to_user
-from .wait_dispatcher import BusinessRetryableError
+from tg_signer_contracts.errors import BusinessRetryableError
 
 # Monkeypatch sqlite3.connect to increase default timeout
 _original_sqlite3_connect = sqlite3.connect
@@ -200,6 +200,7 @@ class BaseUserWorker(Generic[ConfigT]):
         api_id: int = None,
         api_hash: str = None,
         no_updates: Optional[bool] = None,
+        chat_cache_loader: Optional[Callable[[str], List[dict]]] = None,
         *,
         loop: Optional[asyncio.AbstractEventLoop] = None,
     ):
@@ -230,6 +231,7 @@ class BaseUserWorker(Generic[ConfigT]):
         self.loop = self.app.loop
         self.user: Optional[User] = None
         self._config = None
+        self._chat_cache_loader = chat_cache_loader
         self.context = self.ensure_ctx()
 
     def ensure_ctx(self):
@@ -630,30 +632,10 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         )
 
     def _load_chat_cache(self) -> List[dict]:
+        if self._chat_cache_loader is None:
+            return []
         try:
-            from backend.core.database import get_session_local
-            from backend.models.account_chat_cache import AccountChatCacheItem
-
-            db = get_session_local()()
-            try:
-                rows = (
-                    db.query(AccountChatCacheItem)
-                    .filter(AccountChatCacheItem.account_name == self._account)
-                    .order_by(AccountChatCacheItem.title.asc(), AccountChatCacheItem.chat_id.asc())
-                    .all()
-                )
-                return [
-                    {
-                        "id": int(row.chat_id),
-                        "title": row.title,
-                        "username": row.username,
-                        "type": row.chat_type,
-                        "first_name": row.first_name,
-                    }
-                    for row in rows
-                ]
-            finally:
-                db.close()
+            return list(self._chat_cache_loader(self._account) or [])
         except Exception:
             return []
 
@@ -1224,7 +1206,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         message_id: int,
         callback_data: Union[str, bytes],
         **kwargs,
-    ) -> bool:
+    ):
         return await request_callback_answer(
             client=client,
             chat_id=chat_id,
@@ -1232,6 +1214,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             callback_data=callback_data,
             log=self.log,
             callback_text_store=self.context.last_callback_texts,
+            return_result=True,
             **kwargs,
         )
 

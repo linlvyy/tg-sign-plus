@@ -13,7 +13,7 @@ from typing import (
     Union,
 )
 
-from pydantic import AnyHttpUrl, BaseModel, ValidationError, validator
+from pydantic import AnyHttpUrl, BaseModel, Field, ValidationError, validator
 from pyrogram.types import Chat, Message
 from typing_extensions import Self, TypeAlias
 
@@ -89,6 +89,16 @@ class SignConfigV1(BaseJSONConfig):
     sign_at: time
     random_seconds: int
 
+    @validator("chat_id", pre=True)
+    def normalize_chat_id(cls, value):
+        return _normalize_required_chat_id(value)
+
+    @validator("random_seconds", pre=True)
+    def reject_bool_random_seconds(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("random_seconds 必须为数字")
+        return value
+
     @classmethod
     def to_current(cls, obj: "SignConfigV1"):
         return SignConfigV2(
@@ -114,6 +124,16 @@ class SignChatV2(BaseJSONConfig):
     choose_option_by_image: bool = False  # 需要根据图片选择选项
     has_calculation_problem: bool = False  # 是否有计算题
 
+    @validator("chat_id", pre=True)
+    def normalize_chat_id(cls, value):
+        return _normalize_required_chat_id(value)
+
+    @validator("delete_after", pre=True)
+    def reject_bool_delete_after(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("delete_after 必须为数字")
+        return value
+
     @property
     def need_response(self):
         return (
@@ -132,6 +152,12 @@ class SignConfigV2(BaseJSONConfig):
     sign_at: str  # 签到时间，time或crontab表达式
     random_seconds: int = 0
     sign_interval: int = 1  # 连续签到的间隔时间，单位秒
+
+    @validator("random_seconds", "sign_interval", pre=True)
+    def reject_bool_scheduler_numbers(cls, value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field.name} 必须为数字")
+        return value
 
     @classmethod
     def to_current(cls, obj: Union["SignConfigV2", "SignConfigV1"]):
@@ -198,15 +224,160 @@ class SupportAction(int, Enum):
 class SignAction(BaseModel):
     action: SupportAction
 
+    @validator("action", pre=True)
+    def reject_bool_action(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("动作类型必须为数字")
+        return value
+
+
+def _normalize_optional_float(value, *, minimum: float = 0.0):
+    if isinstance(value, bool):
+        return None
+    if value in ("", None):
+        return None
+    try:
+        return max(float(value), minimum)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_optional_int(value, *, minimum: int = 0):
+    if isinstance(value, bool):
+        return None
+    if value in ("", None):
+        return None
+    try:
+        return max(int(value), minimum)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_optional_bool(value):
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+def _normalize_optional_config_bool(value):
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return None
+
+
+SIGN_CHAT_EVENT_BUDGET_MINIMUMS = {
+    "event_timeout": 1.0,
+    "event_retries": 0,
+    "event_retry_wait": 0.0,
+    "event_history_limit": 0,
+    "event_history_failure_threshold": 0,
+    "event_history_rescue_interval": 0.0,
+    "event_history_rpc_timeout": 1.0,
+    "event_history_result_max_age": 0.0,
+    "event_action_timeout": 1.0,
+    "event_send_timeout": 1.0,
+    "event_media_timeout": 1.0,
+    "event_ai_timeout": 1.0,
+    "event_callback_timeout": 0.1,
+    "event_callback_retries": 1,
+}
+
+
+def _event_budget_minimum(name: str):
+    return SIGN_CHAT_EVENT_BUDGET_MINIMUMS[name]
+
+
+def _normalize_int(value, *, default: int = 0, minimum: int = 0):
+    if isinstance(value, bool):
+        return default
+    if value in ("", None):
+        return default
+    try:
+        return max(int(value), minimum)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_required_chat_id(value):
+    if isinstance(value, bool) or value in ("", None):
+        raise ValueError("会话 chat_id 必须为非零整数")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError("会话 chat_id 必须为非零整数")
+    try:
+        chat_id = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("会话 chat_id 必须为非零整数")
+    if chat_id == 0:
+        raise ValueError("会话 chat_id 必须为非零整数")
+    return chat_id
+
+
+def _normalize_string_list(value):
+    values = value or []
+    if isinstance(values, str):
+        values = [item.strip() for item in values.split("#")]
+    if not isinstance(values, list):
+        return []
+    normalized = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, str):
+            raise ValueError("成功判定动作的关键字必须为字符串")
+        text = item.strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _normalize_required_text(value):
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        raise ValueError("动作文本必须为字符串")
+    return str(value).strip()
+
+
+def _normalize_optional_text(value):
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
 
 class SendTextAction(SignAction):
     action: Literal[SupportAction.SEND_TEXT] = SupportAction.SEND_TEXT
     text: str
 
+    @validator("text", pre=True, always=True)
+    def normalize_text(cls, value):
+        return _normalize_required_text(value)
+
 
 class SendDiceAction(SignAction):
     action: Literal[SupportAction.SEND_DICE] = SupportAction.SEND_DICE
     dice: Union[Literal["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"], str]
+
+    @validator("dice", pre=True, always=True)
+    def normalize_dice(cls, value):
+        return _normalize_required_text(value)
 
 
 class ClickKeyboardByTextAction(SignAction):
@@ -214,6 +385,10 @@ class ClickKeyboardByTextAction(SignAction):
         SupportAction.CLICK_KEYBOARD_BY_TEXT
     )
     text: str
+
+    @validator("text", pre=True, always=True)
+    def normalize_text(cls, value):
+        return _normalize_required_text(value)
 
 
 class ChooseOptionByImageAction(SignAction):
@@ -232,25 +407,50 @@ class ReplyByImageRecognitionAction(SignAction):
         SupportAction.REPLY_BY_IMAGE_RECOGNITION
     )
     caption_pattern: Optional[str] = None
-    captcha_lengths: List[int] = []
+    captcha_lengths: List[int] = Field(default_factory=list)
     captcha_charset: Optional[str] = None
     captcha_case: Literal["preserve", "upper", "lower"] = "preserve"
     reply_to_message: bool = False
 
-    def __init__(self, **data):
-        lengths = data.get("captcha_lengths") or []
-        if isinstance(lengths, int):
-            data["captcha_lengths"] = [lengths]
-        elif isinstance(lengths, list):
-            data["captcha_lengths"] = [
-                int(item) for item in lengths if str(item).strip().isdigit()
-            ]
-        captcha_charset = data.get("captcha_charset")
-        if captcha_charset is not None:
-            data["captcha_charset"] = "".join(dict.fromkeys(str(captcha_charset).strip()))
-            if not data["captcha_charset"]:
-                data["captcha_charset"] = None
-        super().__init__(**data)
+    @validator("caption_pattern", pre=True, always=True)
+    def normalize_caption_pattern(cls, value):
+        return _normalize_optional_text(value)
+
+    @validator("captcha_lengths", pre=True, always=True)
+    def normalize_captcha_lengths(cls, value):
+        if value in ("", None):
+            return []
+        values = value if isinstance(value, list) else [value]
+        lengths = []
+        for item in values:
+            if isinstance(item, bool):
+                continue
+            try:
+                length = int(item)
+            except (TypeError, ValueError):
+                continue
+            if length > 0:
+                lengths.append(length)
+        return sorted(set(lengths))
+
+    @validator("captcha_charset", pre=True, always=True)
+    def normalize_captcha_charset(cls, value):
+        if value is None:
+            return None
+        text = "".join(dict.fromkeys(str(value).strip()))
+        return text or None
+
+    @validator("captcha_case", pre=True, always=True)
+    def normalize_captcha_case(cls, value):
+        if value in ("", None):
+            return "preserve"
+        return str(value).strip().lower()
+
+    @validator("reply_to_message", pre=True, always=True)
+    def normalize_reply_to_message(cls, value):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            raise ValueError("识图回复动作的 reply_to_message 必须为布尔值")
+        return _normalize_optional_config_bool(value) or False
 
 
 class ClickButtonByCalculationProblemAction(SignAction):
@@ -270,29 +470,24 @@ class AssertSuccessByTextAction(SignAction):
         SupportAction.ASSERT_SUCCESS_BY_TEXT
     )
     keywords: List[str]
-    checked_keywords: List[str] = []
-    retry_keywords: List[str] = []
-    fail_keywords: List[str] = []
-    account_fail_keywords: List[str] = []
-    ignore_keywords: List[str] = []
+    checked_keywords: List[str] = Field(default_factory=list)
+    retry_keywords: List[str] = Field(default_factory=list)
+    fail_keywords: List[str] = Field(default_factory=list)
+    account_fail_keywords: List[str] = Field(default_factory=list)
+    ignore_keywords: List[str] = Field(default_factory=list)
 
-    def __init__(self, **data):
-        for field_name in (
-            "keywords",
-            "checked_keywords",
-            "retry_keywords",
-            "fail_keywords",
-            "account_fail_keywords",
-            "ignore_keywords",
-        ):
-            values = data.get(field_name) or []
-            if isinstance(values, str):
-                values = [item.strip() for item in values.split("#")]
-            if isinstance(values, list):
-                data[field_name] = [
-                    str(item).strip() for item in values if str(item).strip()
-                ]
-        super().__init__(**data)
+    @validator(
+        "keywords",
+        "checked_keywords",
+        "retry_keywords",
+        "fail_keywords",
+        "account_fail_keywords",
+        "ignore_keywords",
+        pre=True,
+        always=True,
+    )
+    def normalize_keywords(cls, value):
+        return _normalize_string_list(value)
 
 
 ActionT: TypeAlias = Union[
@@ -318,8 +513,98 @@ class SignChatV3(BaseJSONConfig):
     event_retries: Optional[int] = None  # 事件引擎内部重试次数
     event_retry_wait: Optional[float] = None  # 事件引擎重试入口动作前等待秒数
     event_history_limit: Optional[int] = None  # 事件引擎启动前扫描历史消息条数
+    event_history_failure_threshold: Optional[int] = None  # 连续历史扫描失败后暂停补漏，0 表示不暂停
+    event_history_rescue_interval: Optional[float] = None  # 事件引擎历史补漏扫描间隔秒数
+    event_history_rpc_timeout: Optional[float] = None  # 事件引擎读取历史消息 RPC 超时秒数
+    event_history_result_max_age: Optional[float] = None  # 启动历史结果消息最大年龄秒数，0 表示不限制
     event_action_timeout: Optional[float] = None  # 事件引擎单个响应动作超时秒数
+    event_send_timeout: Optional[float] = None  # 事件引擎入口/后续发送动作超时秒数
+    event_media_timeout: Optional[float] = None  # 事件引擎下载图片/媒体超时秒数
+    event_ai_timeout: Optional[float] = None  # 事件引擎 AI/OCR 调用超时秒数
+    event_callback_timeout: Optional[float] = None  # 事件引擎按钮 callback RPC 超时秒数
+    event_callback_retries: Optional[int] = None  # 事件引擎按钮 callback RPC 重试次数
     event_ai_fallback: Optional[bool] = None  # 事件引擎未知后续交互是否启用 AI 兜底
+
+    @validator("chat_id", pre=True)
+    def normalize_chat_id(cls, value):
+        return _normalize_required_chat_id(value)
+
+    @validator("name", pre=True, always=True)
+    def normalize_name(cls, value):
+        return _normalize_optional_text(value)
+
+    @validator(
+        "delete_after",
+        pre=True,
+        always=True,
+    )
+    def normalize_optional_delete_after(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("delete_after 必须为数字")
+        return _normalize_optional_int(value, minimum=0)
+
+    @validator(
+        "event_retries",
+        "event_history_limit",
+        "event_history_failure_threshold",
+        pre=True,
+        always=True,
+    )
+    def normalize_optional_budget_int(cls, value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field.name} 必须为数字")
+        return _normalize_optional_int(value, minimum=_event_budget_minimum(field.name))
+
+    @validator("event_callback_retries", pre=True, always=True)
+    def normalize_optional_positive_int(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("event_callback_retries 必须为数字")
+        return _normalize_optional_int(
+            value,
+            minimum=_event_budget_minimum("event_callback_retries"),
+        )
+
+    @validator(
+        "event_timeout",
+        "event_action_timeout",
+        "event_send_timeout",
+        "event_media_timeout",
+        "event_ai_timeout",
+        "event_history_rpc_timeout",
+        pre=True,
+        always=True,
+    )
+    def normalize_optional_budget_positive_float(cls, value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field.name} 必须为数字")
+        return _normalize_optional_float(value, minimum=_event_budget_minimum(field.name))
+
+    @validator("event_callback_timeout", pre=True, always=True)
+    def normalize_optional_callback_timeout(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("event_callback_timeout 必须为数字")
+        return _normalize_optional_float(
+            value,
+            minimum=_event_budget_minimum("event_callback_timeout"),
+        )
+
+    @validator(
+        "event_retry_wait",
+        "event_history_rescue_interval",
+        "event_history_result_max_age",
+        pre=True,
+        always=True,
+    )
+    def normalize_optional_budget_non_negative_float(cls, value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field.name} 必须为数字")
+        return _normalize_optional_float(value, minimum=_event_budget_minimum(field.name))
+
+    @validator("event_ai_fallback", pre=True, always=True)
+    def normalize_optional_bool(cls, value):
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            raise ValueError("event_ai_fallback 必须为布尔值")
+        return _normalize_optional_bool(value)
 
     def __repr__(self) -> str:
         return (
@@ -440,6 +725,18 @@ class SignConfigV3(BaseJSONConfig):
     @validator("engine", pre=True, always=True)
     def force_event_engine(cls, _value):
         return "event"
+
+    @validator("random_seconds", "retry_count", pre=True, always=True)
+    def normalize_non_negative_int(cls, value, field):
+        if isinstance(value, bool):
+            raise ValueError(f"{field.name} 必须为数字")
+        return _normalize_int(value, default=0, minimum=0)
+
+    @validator("sign_interval", pre=True, always=True)
+    def normalize_sign_interval(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("sign_interval 必须为数字")
+        return _normalize_int(value, default=1, minimum=0)
 
     @property
     def requires_ai(self) -> bool:

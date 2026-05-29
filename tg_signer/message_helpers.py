@@ -67,6 +67,15 @@ def poetry_message_signature(message: Message) -> tuple[str, tuple[str, ...]]:
 
 def message_version(message: Message) -> tuple:
     reply_markup = message.reply_markup
+    photo = getattr(message, "photo", None)
+    photo_signature = None
+    if photo:
+        photo_signature = (
+            getattr(photo, "file_unique_id", None),
+            getattr(photo, "file_id", None),
+            getattr(photo, "width", None),
+            getattr(photo, "height", None),
+        )
     inline_buttons = ()
     reply_buttons = ()
     if isinstance(reply_markup, InlineKeyboardMarkup):
@@ -90,7 +99,7 @@ def message_version(message: Message) -> tuple:
         message.id,
         message.text or "",
         message.caption or "",
-        bool(message.photo),
+        photo_signature,
         inline_buttons,
         reply_buttons,
         getattr(message, "edit_date", None),

@@ -260,7 +260,7 @@ def canary_report(
     json_output: bool,
     strict: bool,
 ):
-    """汇总当前任务的事件引擎健康诊断。"""
+    """汇总当前任务的事件引擎诊断报告。"""
     account = ctx.obj.get("account")
     if args:
         if len(args) != 1:

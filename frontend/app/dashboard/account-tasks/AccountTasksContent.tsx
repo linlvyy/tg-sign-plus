@@ -25,6 +25,7 @@ import {
     CreateSignTaskRequest,
     SchedulerStatus,
     SignTaskAction,
+    SignTaskRunSummary,
 } from "../../../lib/api";
 import {
     Plus,
@@ -232,23 +233,109 @@ const groupHistoryFlowItemsByStep = (flowItems: SignTaskFlowItem[] | undefined, 
     return groups;
 };
 
-const diagnosticTone = (status: string | undefined) => {
-    switch (status) {
-        case "pass": return "success";
-        case "warn": return "warning";
-        case "stale": return "warning";
-        case "fail": return "danger";
-        default: return "neutral";
+const runSummaryStatusLabel = (summary: SignTaskRunSummary | undefined, isZh: boolean) => {
+    switch (summary?.status) {
+        case "checked": return isZh ? "已签到" : "Checked";
+        case "success": return isZh ? "成功" : "Success";
+        case "failed": return isZh ? "失败" : "Failed";
+        default: return summary?.success ? (isZh ? "成功" : "Success") : (isZh ? "失败" : "Failed");
     }
 };
 
-const diagnosticLabel = (status: string | undefined, isZh: boolean) => {
-    switch (status) {
-        case "pass": return isZh ? "诊断通过" : "Checks passed";
-        case "warn": return isZh ? "需观察" : "Watch";
-        case "fail": return isZh ? "诊断失败" : "Failed checks";
-        default: return isZh ? "未诊断" : "Unknown";
+const runSummaryTone = (summary: SignTaskRunSummary | undefined, fallbackSuccess?: boolean) => {
+    if (summary?.status === "checked" || summary?.status === "success" || summary?.success) return "success";
+    if (summary?.status === "failed" || fallbackSuccess === false) return "danger";
+    return "neutral";
+};
+
+const RUN_SUMMARY_TIMEOUT_COUNT_KEYS = [
+    "event",
+    "response_action",
+    "callback_outer",
+    "send_rpc",
+    "media_rpc",
+    "ai_rpc",
+    "task_run",
+    "client_rpc",
+    "client_rpc_late_cancelled",
+    "client_rpc_late_completed",
+    "client_rpc_late_exception",
+    "client_startup_retry",
+    "client_startup_lock",
+    "client_exit_lock",
+    "client_close_lock",
+    "task_run_late_cancelled",
+    "task_run_late_completed",
+    "task_run_late_exception",
+    "late_cancelled",
+    "late_completed",
+    "late_exception",
+] as const satisfies readonly (keyof NonNullable<SignTaskRunSummary["timeouts"]>)[];
+
+const compactRunSummaryParts = (summary: SignTaskRunSummary | undefined, isZh: boolean) => {
+    if (!summary) return [];
+    const parts: string[] = [];
+    if (summary.total_attempts) {
+        parts.push(`${isZh ? "尝试" : "attempt"} ${summary.attempt || 0}/${summary.total_attempts}`);
     }
+    const trustedTimeouts = summary.callbacks?.trusted_timeout || 0;
+    if (trustedTimeouts > 0) {
+        parts.push(`${isZh ? "可信回调超时" : "trusted callbacks"} ${trustedTimeouts}`);
+    }
+    const callbackOuterTimeouts = summary.callbacks?.outer_timeouts || 0;
+    if (callbackOuterTimeouts > trustedTimeouts) {
+        parts.push(`${isZh ? "回调外层超时" : "callback outer timeouts"} ${callbackOuterTimeouts}`);
+    }
+    const callbackInvalidAfterTimeout = summary.callbacks?.data_invalid_after_timeout || 0;
+    if (callbackInvalidAfterTimeout > 0) {
+        parts.push(`${isZh ? "回调数据失效" : "callback data expired"} ${callbackInvalidAfterTimeout}`);
+    }
+    const historyHandled = summary.history?.messages_handled || 0;
+    if (historyHandled > 0) {
+        parts.push(`${isZh ? "历史补漏" : "history rescue"} ${historyHandled}`);
+    }
+    const duplicateMessages = (summary.messages?.skipped_duplicate || 0)
+        + (summary.messages?.skipped_concurrent_duplicate || 0)
+        + (summary.history?.duplicate_messages || 0);
+    if (duplicateMessages > 0) {
+        parts.push(`${isZh ? "重复消息" : "duplicate messages"} ${duplicateMessages}`);
+    }
+    const finishedSkips = summary.messages?.skipped_finished || 0;
+    if (finishedSkips > 0) {
+        parts.push(`${isZh ? "迟到消息" : "late messages"} ${finishedSkips}`);
+    }
+    const historyFailedScans = summary.history?.failed_scans || 0;
+    if (historyFailedScans > 0) {
+        parts.push(`${isZh ? "历史查询失败" : "history failures"} ${historyFailedScans}`);
+    }
+    if (summary.history?.rescue_suspended) {
+        parts.push(isZh ? "历史补漏暂停" : "history rescue paused");
+    }
+    const retrySuppressed = summary.retry_suppressed_count || 0;
+    if (retrySuppressed > 0) {
+        parts.push(`${isZh ? "抑制重试" : "suppressed retries"} ${retrySuppressed}`);
+    }
+    if (summary.retry?.limit_exceeded) {
+        parts.push(isZh ? "重试耗尽" : "retry limit exceeded");
+    }
+    const timeoutTotal = typeof summary.timeouts?.timeout_count_total === "number"
+        ? summary.timeouts.timeout_count_total
+        : RUN_SUMMARY_TIMEOUT_COUNT_KEYS.reduce<number>((total, key) => {
+            const value = summary.timeouts?.[key];
+            return typeof value === "number" ? total + value : total;
+        }, 0);
+    if (timeoutTotal > 0) {
+        parts.push(`${isZh ? "超时" : "timeouts"} ${timeoutTotal}`);
+    }
+    if (summary.cleanup?.failed) {
+        const timeout = summary.cleanup.timeout_seconds ? `/${summary.cleanup.timeout_seconds}s` : "";
+        parts.push(`${isZh ? "清理失败" : "cleanup failed"}${timeout}`);
+    }
+    const lockWait = Number(summary.account_lock?.wait_seconds || 0);
+    if (lockWait > 0.5) {
+        parts.push(`${isZh ? "锁等待" : "lock wait"} ${lockWait}s`);
+    }
+    return parts;
 };
 
 const formatInlineMeta = (meta: SignTaskFlowItem["meta"] | undefined, detailed = false, text?: string) => {
@@ -314,6 +401,8 @@ const formatHistoryForAi = ({
     isZh: boolean;
 }) => {
     const diagnostics = getHistoryDiagnostics(log, isZh);
+    const summary = log.run_summary;
+    const summaryParts = compactRunSummaryParts(summary, isZh);
     const chatId = log.flow_items?.find((item) => item.meta?.chat_id)?.meta?.chat_id;
     const errorMeta = diagnostics.errorItem?.meta ? JSON.stringify(diagnostics.errorItem.meta, null, 2) : "{}";
 
@@ -325,6 +414,8 @@ const formatHistoryForAi = ({
 - chat_id：${chatId || "未知"}
 - 执行时间：${formatFlowDateTime(log.time, language)}
 - 执行结果：${log.success ? "成功" : "失败"}
+- 结构化状态：${summary ? runSummaryStatusLabel(summary, isZh) : "无"}
+- 结构化摘要：${summaryParts.length ? summaryParts.join("；") : "无"}
 - 机器人消息：${log.message || "无"}
 - 日志条数：${log.flow_items?.length || log.flow_logs?.length || 0}
 
@@ -482,7 +573,16 @@ type TaskFormState = {
     event_retries: number | undefined;
     event_retry_wait: number | undefined;
     event_history_limit: number | undefined;
+    event_history_failure_threshold: number | undefined;
+    event_history_rescue_interval: number | undefined;
+    event_history_rpc_timeout: number | undefined;
+    event_history_result_max_age: number | undefined;
     event_action_timeout: number | undefined;
+    event_send_timeout: number | undefined;
+    event_media_timeout: number | undefined;
+    event_ai_timeout: number | undefined;
+    event_callback_timeout: number | undefined;
+    event_callback_retries: number | undefined;
     event_ai_fallback: boolean | undefined;
     execution_mode: "fixed" | "range";
     range_start: string;
@@ -602,6 +702,8 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
     }, [showActions]);
 
     const closeActions = () => setShowActions(false);
+    const lastRunSummary = task.last_run?.run_summary;
+    const lastRunSummaryParts = compactRunSummaryParts(lastRunSummary, language === "zh");
 
     return (
         <div className="glass-panel group flex h-full flex-col p-4 transition-all hover:border-[var(--accent)] md:p-5">
@@ -696,15 +798,26 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
                     {language === "zh" ? "最近执行" : "Last run"}
                 </div>
                 {task.last_run ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2">
-                        <StatusBadge tone={task.last_run.success ? "success" : "danger"}>
-                            {task.last_run.success ? t("success") : t("failure")}
-                        </StatusBadge>
-                        <span className="font-mono text-[11px] text-[var(--text-tertiary)]">
-                            {new Date(task.last_run.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
-                                month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
-                            })}
-                        </span>
+                    <div className="mt-2 space-y-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <StatusBadge tone={runSummaryTone(lastRunSummary, task.last_run.success) as any}>
+                                {lastRunSummary ? runSummaryStatusLabel(lastRunSummary, language === "zh") : (task.last_run.success ? t("success") : t("failure"))}
+                            </StatusBadge>
+                            <span className="font-mono text-[11px] text-[var(--text-tertiary)]">
+                                {new Date(task.last_run.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
+                                    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit"
+                                })}
+                            </span>
+                        </div>
+                        {lastRunSummaryParts.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                                {lastRunSummaryParts.slice(0, 3).map((part) => (
+                                    <span key={part} className="rounded-md border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-1.5 py-0.5 text-[10px] text-[var(--text-tertiary)]">
+                                        {part}
+                                    </span>
+                                ))}
+                            </div>
+                        ) : null}
                     </div>
                 ) : (
                     <div className="mt-2">
@@ -888,7 +1001,16 @@ export default function AccountTasksContent() {
         event_retries: undefined,
         event_retry_wait: undefined,
         event_history_limit: undefined,
+        event_history_failure_threshold: undefined,
+        event_history_rescue_interval: undefined,
+        event_history_rpc_timeout: undefined,
+        event_history_result_max_age: undefined,
         event_action_timeout: undefined,
+        event_send_timeout: undefined,
+        event_media_timeout: undefined,
+        event_ai_timeout: undefined,
+        event_callback_timeout: undefined,
+        event_callback_retries: undefined,
         event_ai_fallback: undefined,
         execution_mode: "range",
         range_start: "09:00",
@@ -911,7 +1033,16 @@ export default function AccountTasksContent() {
         event_retries: undefined,
         event_retry_wait: undefined,
         event_history_limit: undefined,
+        event_history_failure_threshold: undefined,
+        event_history_rescue_interval: undefined,
+        event_history_rpc_timeout: undefined,
+        event_history_result_max_age: undefined,
         event_action_timeout: undefined,
+        event_send_timeout: undefined,
+        event_media_timeout: undefined,
+        event_ai_timeout: undefined,
+        event_callback_timeout: undefined,
+        event_callback_retries: undefined,
         event_ai_fallback: undefined,
         execution_mode: "fixed",
         range_start: "09:00",
@@ -1557,7 +1688,16 @@ export default function AccountTasksContent() {
                     event_retries: newTask.event_retries,
                     event_retry_wait: newTask.event_retry_wait,
                     event_history_limit: newTask.event_history_limit,
+                    event_history_failure_threshold: newTask.event_history_failure_threshold,
+                    event_history_rescue_interval: newTask.event_history_rescue_interval,
+                    event_history_rpc_timeout: newTask.event_history_rpc_timeout,
+                    event_history_result_max_age: newTask.event_history_result_max_age,
                     event_action_timeout: newTask.event_action_timeout,
+                    event_send_timeout: newTask.event_send_timeout,
+                    event_media_timeout: newTask.event_media_timeout,
+                    event_ai_timeout: newTask.event_ai_timeout,
+                    event_callback_timeout: newTask.event_callback_timeout,
+                    event_callback_retries: newTask.event_callback_retries,
                     event_ai_fallback: newTask.event_ai_fallback,
                 }],
                 random_seconds: newTask.random_minutes * 60,
@@ -1583,7 +1723,16 @@ export default function AccountTasksContent() {
                 event_retries: undefined,
                 event_retry_wait: undefined,
                 event_history_limit: undefined,
+                event_history_failure_threshold: undefined,
+                event_history_rescue_interval: undefined,
+                event_history_rpc_timeout: undefined,
+                event_history_result_max_age: undefined,
                 event_action_timeout: undefined,
+                event_send_timeout: undefined,
+                event_media_timeout: undefined,
+                event_ai_timeout: undefined,
+                event_callback_timeout: undefined,
+                event_callback_retries: undefined,
                 event_ai_fallback: undefined,
                 execution_mode: "fixed",
                 range_start: "09:00",
@@ -1627,7 +1776,16 @@ export default function AccountTasksContent() {
             event_retries: chat?.event_retries,
             event_retry_wait: chat?.event_retry_wait,
             event_history_limit: chat?.event_history_limit,
+            event_history_failure_threshold: chat?.event_history_failure_threshold,
+            event_history_rescue_interval: chat?.event_history_rescue_interval,
+            event_history_rpc_timeout: chat?.event_history_rpc_timeout,
+            event_history_result_max_age: chat?.event_history_result_max_age,
             event_action_timeout: chat?.event_action_timeout,
+            event_send_timeout: chat?.event_send_timeout,
+            event_media_timeout: chat?.event_media_timeout,
+            event_ai_timeout: chat?.event_ai_timeout,
+            event_callback_timeout: chat?.event_callback_timeout,
+            event_callback_retries: chat?.event_callback_retries,
             event_ai_fallback: chat?.event_ai_fallback,
             execution_mode: task.execution_mode || "fixed",
             range_start: task.range_start || "09:00",
@@ -1665,7 +1823,16 @@ export default function AccountTasksContent() {
                     event_retries: editTask.event_retries,
                     event_retry_wait: editTask.event_retry_wait,
                     event_history_limit: editTask.event_history_limit,
+                    event_history_failure_threshold: editTask.event_history_failure_threshold,
+                    event_history_rescue_interval: editTask.event_history_rescue_interval,
+                    event_history_rpc_timeout: editTask.event_history_rpc_timeout,
+                    event_history_result_max_age: editTask.event_history_result_max_age,
                     event_action_timeout: editTask.event_action_timeout,
+                    event_send_timeout: editTask.event_send_timeout,
+                    event_media_timeout: editTask.event_media_timeout,
+                    event_ai_timeout: editTask.event_ai_timeout,
+                    event_callback_timeout: editTask.event_callback_timeout,
+                    event_callback_retries: editTask.event_callback_retries,
                     event_ai_fallback: editTask.event_ai_fallback,
                 }],
                 execution_mode: editTask.execution_mode,
@@ -2091,6 +2258,82 @@ export default function AccountTasksContent() {
                                         }}
                                     />
                                 </FormField>
+                                <FormField label={language === "zh" ? "历史失败阈值" : "History failure limit"} htmlFor="task-event-history-failure-threshold">
+                                    <Input
+                                        id="task-event-history-failure-threshold"
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="0"
+                                        value={showCreateDialog ? newTask.event_history_failure_threshold ?? "" : editTask.event_history_failure_threshold ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                                            const raw = cleaned === "" ? undefined : parseInt(cleaned, 10);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_history_failure_threshold: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_history_failure_threshold: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "历史补漏间隔秒数" : "History rescue interval"} htmlFor="task-event-history-rescue-interval">
+                                    <Input
+                                        id="task-event-history-rescue-interval"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="5"
+                                        value={showCreateDialog ? newTask.event_history_rescue_interval ?? "" : editTask.event_history_rescue_interval ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_history_rescue_interval: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_history_rescue_interval: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "历史 RPC 超时秒数" : "History RPC timeout"} htmlFor="task-event-history-rpc-timeout">
+                                    <Input
+                                        id="task-event-history-rpc-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="8"
+                                        value={showCreateDialog ? newTask.event_history_rpc_timeout ?? "" : editTask.event_history_rpc_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_history_rpc_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_history_rpc_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "历史结果最大年龄秒数" : "History result max age"} htmlFor="task-event-history-result-max-age">
+                                    <Input
+                                        id="task-event-history-result-max-age"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="600"
+                                        value={showCreateDialog ? newTask.event_history_result_max_age ?? "" : editTask.event_history_result_max_age ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_history_result_max_age: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_history_result_max_age: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
                                 <FormField label={language === "zh" ? "单动作超时秒数" : "Action timeout"} htmlFor="task-event-action-timeout">
                                     <Input
                                         id="task-event-action-timeout"
@@ -2106,6 +2349,101 @@ export default function AccountTasksContent() {
                                                 setNewTask({ ...newTask, event_action_timeout: val });
                                             } else {
                                                 setEditTask({ ...editTask, event_action_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "发送超时秒数" : "Send timeout"} htmlFor="task-event-send-timeout">
+                                    <Input
+                                        id="task-event-send-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="20"
+                                        value={showCreateDialog ? newTask.event_send_timeout ?? "" : editTask.event_send_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_send_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_send_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "媒体超时秒数" : "Media timeout"} htmlFor="task-event-media-timeout">
+                                    <Input
+                                        id="task-event-media-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="30"
+                                        value={showCreateDialog ? newTask.event_media_timeout ?? "" : editTask.event_media_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_media_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_media_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "AI 超时秒数" : "AI timeout"} htmlFor="task-event-ai-timeout">
+                                    <Input
+                                        id="task-event-ai-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="45"
+                                        value={showCreateDialog ? newTask.event_ai_timeout ?? "" : editTask.event_ai_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_ai_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_ai_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "按钮回调超时秒数" : "Callback timeout"} htmlFor="task-event-callback-timeout">
+                                    <Input
+                                        id="task-event-callback-timeout"
+                                        type="text"
+                                        inputMode="decimal"
+                                        placeholder="10"
+                                        value={showCreateDialog ? newTask.event_callback_timeout ?? "" : editTask.event_callback_timeout ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9.]/g, "");
+                                            const raw = cleaned === "" ? undefined : Number(cleaned);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(0.1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_callback_timeout: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_callback_timeout: val });
+                                            }
+                                        }}
+                                    />
+                                </FormField>
+                                <FormField label={language === "zh" ? "按钮回调重试次数" : "Callback retries"} htmlFor="task-event-callback-retries">
+                                    <Input
+                                        id="task-event-callback-retries"
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder="3"
+                                        value={showCreateDialog ? newTask.event_callback_retries ?? "" : editTask.event_callback_retries ?? ""}
+                                        onChange={(e) => {
+                                            const cleaned = e.target.value.replace(/[^0-9]/g, "");
+                                            const raw = cleaned === "" ? undefined : parseInt(cleaned, 10);
+                                            const val = raw === undefined || Number.isNaN(raw) ? undefined : Math.max(1, raw);
+                                            if (showCreateDialog) {
+                                                setNewTask({ ...newTask, event_callback_retries: val });
+                                            } else {
+                                                setEditTask({ ...editTask, event_callback_retries: val });
                                             }
                                         }}
                                     />
@@ -2856,6 +3194,7 @@ export default function AccountTasksContent() {
                             <div className="min-h-0 flex-1 space-y-2 overflow-y-auto custom-scrollbar pr-1">
                                 {historyLogs.map((log, index) => {
                                     const diagnostics = getHistoryDiagnostics(log, isZh);
+                                    const summaryParts = compactRunSummaryParts(log.run_summary, isZh);
                                     const active = index === selectedHistoryIndex;
                                     return (
                                         <button
@@ -2869,7 +3208,9 @@ export default function AccountTasksContent() {
                                         >
                                             <div className="flex items-center justify-between gap-2">
                                                 <span className="font-mono text-xs text-[var(--text-primary)]">{formatFlowDateTime(log.time, language)}</span>
-                                                <StatusBadge tone={log.success ? "success" : "danger"}>{log.success ? t("success") : t("failure")}</StatusBadge>
+                                                <StatusBadge tone={runSummaryTone(log.run_summary, log.success) as any}>
+                                                    {log.run_summary ? runSummaryStatusLabel(log.run_summary, isZh) : (log.success ? t("success") : t("failure"))}
+                                                </StatusBadge>
                                             </div>
                                             <div className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">
                                                 {log.message || diagnostics.directReason || (isZh ? "无结果消息" : "No result message")}
@@ -2877,11 +3218,9 @@ export default function AccountTasksContent() {
                                             <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">
                                                 {diagnostics.completedSteps}/{diagnostics.totalSteps || "-"} {isZh ? "步骤" : "steps"} · {diagnostics.duration}
                                             </div>
-                                            {log.diagnostics ? (
-                                                <div className="mt-2">
-                                                    <StatusBadge tone={diagnosticTone(log.diagnostics.status) as any} className="max-w-full normal-case tracking-normal">
-                                                        {diagnosticLabel(log.diagnostics.status, isZh)}
-                                                    </StatusBadge>
+                                            {summaryParts.length > 0 ? (
+                                                <div className="mt-2 line-clamp-2 text-[10px] text-[var(--text-tertiary)]">
+                                                    {summaryParts.slice(0, 3).join(" · ")}
                                                 </div>
                                             ) : null}
                                         </button>
@@ -2939,34 +3278,31 @@ export default function AccountTasksContent() {
                             <div className="min-h-0 flex-1 overflow-y-auto p-4 custom-scrollbar md:p-5">
                                 {historyLogView === "read" ? (
                                 <div className="space-y-4">
+                                    {selectedHistoryLog.run_summary ? (
+                                        <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-3">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <StatusBadge tone={runSummaryTone(selectedHistoryLog.run_summary, selectedHistoryLog.success) as any}>
+                                                    {runSummaryStatusLabel(selectedHistoryLog.run_summary, isZh)}
+                                                </StatusBadge>
+                                                <span className="text-sm font-semibold text-[var(--text-primary)]">
+                                                    {isZh ? "运行细节" : "Run details"}
+                                                </span>
+                                            </div>
+                                            <div className="mt-3 flex flex-wrap gap-2">
+                                                {compactRunSummaryParts(selectedHistoryLog.run_summary, isZh).map((part) => (
+                                                    <span key={part} className="rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-2 py-1 text-xs text-[var(--text-secondary)]">
+                                                        {part}
+                                                    </span>
+                                                ))}
+                                                {compactRunSummaryParts(selectedHistoryLog.run_summary, isZh).length === 0 ? (
+                                                    <span className="text-xs text-[var(--text-tertiary)]">{isZh ? "暂无额外计数" : "No extra counters"}</span>
+                                                ) : null}
+                                            </div>
+                                        </div>
+                                    ) : null}
                                     {selectedHistoryLog.message ? (
                                         <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-3 text-sm text-[var(--text-secondary)] break-words">
                                             <span className="font-semibold text-[var(--text-primary)]">{isZh ? "机器人消息：" : "Bot message: "}</span>{selectedHistoryLog.message}
-                                        </div>
-                                    ) : null}
-                                    {selectedHistoryLog.diagnostics ? (
-                                        <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-3">
-                                            <div className="flex flex-wrap items-center gap-2">
-                                                <StatusBadge tone={diagnosticTone(selectedHistoryLog.diagnostics.status) as any} className="normal-case tracking-normal">
-                                                    {diagnosticLabel(selectedHistoryLog.diagnostics.status, isZh)}
-                                                </StatusBadge>
-                                                <span className="text-sm font-semibold text-[var(--text-primary)]">
-                                                    {selectedHistoryLog.diagnostics.summary}
-                                                </span>
-                                            </div>
-                                            <div className="mt-3 grid gap-2 text-xs text-[var(--text-secondary)] md:grid-cols-2">
-                                                {selectedHistoryLog.diagnostics.checks.map((check) => (
-                                                    <div key={check.id} className="flex min-w-0 items-start gap-2 rounded-lg border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-3 py-2">
-                                                        <StatusBadge tone={diagnosticTone(check.status) as any} className="shrink-0 normal-case tracking-normal">
-                                                            {check.status}
-                                                        </StatusBadge>
-                                                        <div className="min-w-0">
-                                                            <div className="font-medium text-[var(--text-primary)]">{check.label}</div>
-                                                            {check.detail ? <div className="mt-1 break-words text-[var(--text-tertiary)]">{check.detail}</div> : null}
-                                                        </div>
-                                                    </div>
-                                                ))}
-                                            </div>
                                         </div>
                                     ) : null}
                                     {selectedHistoryLog.flow_items && selectedHistoryLog.flow_items.length > 0 ? (

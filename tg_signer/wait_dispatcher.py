@@ -1,5 +1,5 @@
 from __future__ import annotations
 
+from tg_signer_contracts.errors import BusinessRetryableError
 
-class BusinessRetryableError(RuntimeError):
-    """Retryable task-level business failure raised by the event engine."""
+__all__ = ["BusinessRetryableError"]
