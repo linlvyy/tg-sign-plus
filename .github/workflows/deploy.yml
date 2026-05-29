@@ -2,6 +2,8 @@ name: Publish Tg Sign Plus Docker Image
 
 on:
   workflow_dispatch:  # 手动触发
+  release:
+    types: [published]  # 新 release 发布时触发
 
 jobs:
   build-and-push:
