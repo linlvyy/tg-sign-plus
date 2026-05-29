@@ -15,8 +15,14 @@ jobs:
 
       - name: Get latest release tag
         id: get_latest_tag
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
-          LATEST_TAG=$(curl -s https://api.github.com/repos/ssfun/tg-sign-plus/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+          if [ -n "$RELEASE_TAG" ]; then
+            LATEST_TAG="$RELEASE_TAG"
+          else
+            LATEST_TAG=$(curl -s https://api.github.com/repos/ssfun/tg-sign-plus/releases/latest | grep -oP '"tag_name": "\K(.*)(?=")')
+          fi
           echo "Latest tag: $LATEST_TAG"
           echo "latest_tag=$LATEST_TAG" >> $GITHUB_OUTPUT
 
@@ -69,6 +75,8 @@ jobs:
         with:
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            APP_VERSION=${{ steps.get_latest_tag.outputs.latest_tag }}
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/tg-sign-plus:latest
             ${{ secrets.DOCKER_USERNAME }}/tg-sign-plus:${{ steps.get_latest_tag.outputs.latest_tag }}

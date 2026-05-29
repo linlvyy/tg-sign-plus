@@ -2,6 +2,9 @@
 
 WORKDIR /frontend
 
+ARG APP_VERSION=dev
+ENV NEXT_PUBLIC_APP_VERSION=${APP_VERSION}
+
 # Copy dependency manifests first for better layer caching.
 COPY frontend/package*.json ./
 RUN npm ci

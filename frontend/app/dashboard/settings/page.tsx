@@ -56,6 +56,8 @@ import { ThemeLanguageToggle } from "../../../components/ThemeLanguageToggle";
 import { AppFooter } from "../../../components/app-footer";
 import { useLanguage } from "../../../context/LanguageContext";
 
+const appVersion = process.env.NEXT_PUBLIC_APP_VERSION || "dev";
+
 export default function SettingsPage() {
     const router = useRouter();
     const { t, language } = useLanguage();
@@ -464,7 +466,15 @@ export default function SettingsPage() {
                                     </h1>
                                 </div>
                             </div>
-                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 lg:min-w-[420px]">
+                            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:min-w-[560px] lg:grid-cols-4">
+                                <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] p-4">
+                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-tertiary)]">
+                                        {language === "zh" ? "版本" : "Version"}
+                                    </div>
+                                    <div className="mt-3 text-sm font-semibold text-[var(--text-primary)]">
+                                        {appVersion}
+                                    </div>
+                                </div>
                                 <div className="rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-tertiary)] p-4">
                                     <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-[var(--text-tertiary)]">2FA</div>
                                     <div className="mt-3">
