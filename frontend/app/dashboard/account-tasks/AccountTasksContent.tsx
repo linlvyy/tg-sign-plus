@@ -801,7 +801,7 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
                 )}
             </div>
 
-            <div className="mt-4 flex flex-col gap-3 border-t border-[var(--border-secondary)] pt-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mt-4 flex flex-nowrap items-center gap-1.5 border-t border-[var(--border-secondary)] pt-4 sm:gap-2">
                 <Button
                     size="sm"
                     onClick={() => {
@@ -809,18 +809,19 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
                         onRun(task.name);
                     }}
                     disabled={loading || isRunning}
-                    className="self-start"
+                    className="shrink-0 whitespace-nowrap px-2 sm:px-3"
                 >
                     {isRunning ? <Spinner className="animate-spin" size={14} /> : <Play weight="fill" size={14} />}
                     {t("run")}
                 </Button>
 
-                <div className="flex flex-wrap items-center gap-2 self-start sm:justify-end sm:self-auto">
+                <div className="flex min-w-0 flex-1 flex-nowrap items-center justify-end gap-1.5 sm:gap-2">
                     <Button
                         variant="secondary"
                         size="sm"
                         onClick={() => onViewLogs(task)}
                         disabled={loading || isRunning}
+                        className="shrink-0 whitespace-nowrap px-2 sm:px-3"
                     >
                         <ListDashes weight="bold" size={14} />
                         {language === "zh" ? "日志" : "Logs"}
@@ -830,11 +831,12 @@ const TaskItem = memo(({ task, loading, isRunning, schedulerItem, schedulerTimez
                         size="sm"
                         onClick={() => onToggleEnabled(task)}
                         disabled={loading || isRunning}
+                        className="shrink-0 whitespace-nowrap px-2 sm:px-3"
                     >
                         <Clock weight="bold" size={14} />
                         {task.enabled ? (language === "zh" ? "暂停" : "Pause") : (language === "zh" ? "恢复" : "Resume")}
                     </Button>
-                    <div ref={menuRef} className="relative">
+                    <div ref={menuRef} className="relative shrink-0">
                         <IconButton
                             onClick={() => setShowActions((prev) => !prev)}
                             disabled={loading || isRunning}
@@ -1997,24 +1999,28 @@ export default function AccountTasksContent() {
                 </section>
 
                 <section className="space-y-4">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                        <div className="flex flex-wrap items-center gap-3">
-                            <h2 className="text-base font-semibold text-[var(--text-primary)]">{language === "zh" ? "任务列表" : "Task list"}</h2>
-                            <div className="text-xs text-[var(--text-tertiary)]">
-                                {language === "zh" ? `当前显示 ${filteredTasks.length} / ${tasks.length}` : `Showing ${filteredTasks.length} / ${tasks.length}`}
+                    <div className="flex flex-nowrap items-center justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                            <div className="flex min-w-0 items-baseline gap-2">
+                                <h2 className="shrink-0 text-base font-semibold text-[var(--text-primary)]">{language === "zh" ? "任务列表" : "Task list"}</h2>
+                                <div className="min-w-0 truncate text-xs text-[var(--text-tertiary)]">
+                                    {language === "zh" ? `${filteredTasks.length} / ${tasks.length}` : `${filteredTasks.length} / ${tasks.length}`}
+                                </div>
                             </div>
                             {runningTaskName ? (
-                                <StatusBadge tone="success" className="px-3 py-1 text-[10px]">
-                                    {language === "zh" ? `运行中：${runningTaskName}` : `Running: ${runningTaskName}`}
+                                <StatusBadge tone="success" className="mt-2 max-w-full px-3 py-1 text-[10px]">
+                                    <span className="truncate">
+                                        {language === "zh" ? `运行中：${runningTaskName}` : `Running: ${runningTaskName}`}
+                                    </span>
                                 </StatusBadge>
                             ) : null}
                         </div>
-                        <div className="flex flex-nowrap items-center gap-2 self-start lg:self-center">
+                        <div className="shrink-0">
                             <select
                                 id="task-filter-select"
                                 value={taskFilter}
                                 onChange={(e) => setTaskFilter(e.target.value as TaskFilterKey)}
-                                className="h-10 min-w-[160px] rounded-xl border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)] sm:min-w-[190px]"
+                                className="h-10 w-[128px] rounded-xl border border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-3 text-sm text-[var(--text-primary)] outline-none transition-colors focus:border-[var(--accent)] sm:w-[190px]"
                             >
                                 {taskFilterOptions.map((option) => (
                                     <option key={option.value} value={option.value}>
@@ -3069,8 +3075,8 @@ export default function AccountTasksContent() {
                 title={historyTaskName ? t("task_history_logs_title").replace("{name}", historyTaskName) : t("task_history_logs")}
                 description={historyTaskName ? `${accountName} · ${historyLogs.length} ${language === "zh" ? "条记录" : "records"}` : undefined}
                 onClose={() => setHistoryTaskName(null)}
-                className="max-w-[78rem]"
-                contentClassName="h-[82vh] overflow-hidden bg-[var(--bg-secondary)] p-0"
+                className="flex h-[94dvh] max-w-[78rem] flex-col sm:h-[88vh]"
+                contentClassName="min-h-0 flex-1 max-h-none overflow-hidden bg-[var(--bg-secondary)] p-0"
             >
                 {historyLoading ? (
                     <div className="m-4 flex min-h-[260px] flex-col items-center justify-center gap-3 rounded-2xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-6 text-center text-[var(--text-tertiary)]">
@@ -3080,13 +3086,13 @@ export default function AccountTasksContent() {
                 ) : historyLogs.length === 0 ? (
                     <div className="m-4 flex min-h-[260px] items-center justify-center rounded-2xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-secondary)] px-6 text-center text-sm text-[var(--text-tertiary)]">{t("task_history_empty")}</div>
                 ) : selectedHistoryLog ? (
-                    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[18rem,minmax(0,1fr)]">
-                        <aside className="flex min-h-0 flex-col border-b border-[var(--border-secondary)] bg-[var(--bg-tertiary)] p-3 lg:border-b-0 lg:border-r">
-                            <div className="mb-3">
+                    <div className="grid h-full min-h-0 grid-cols-1 grid-rows-[auto,minmax(0,1fr)] lg:grid-cols-[18rem,minmax(0,1fr)] lg:grid-rows-1">
+                        <aside className="flex min-h-0 flex-col border-b border-[var(--border-secondary)] bg-[var(--bg-tertiary)] p-2 lg:border-b-0 lg:border-r lg:p-3">
+                            <div className="mb-2 hidden lg:block">
                                 <div className="text-xs font-bold uppercase tracking-[0.14em] text-[var(--text-tertiary)]">{isZh ? "历史运行" : "Runs"}</div>
                                 <div className="mt-1 text-sm font-semibold text-[var(--text-primary)]">{historyLogs.length} {isZh ? "条记录" : "records"}</div>
                             </div>
-                            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto custom-scrollbar pr-1">
+                            <div className="flex gap-2 overflow-x-auto custom-scrollbar pb-1 lg:min-h-0 lg:flex-1 lg:flex-col lg:space-y-2 lg:overflow-x-visible lg:overflow-y-auto lg:pb-0 lg:pr-1">
                                 {historyLogs.map((log, index) => {
                                     const diagnostics = getHistoryDiagnostics(log, isZh);
                                     const summaryParts = compactRunSummaryParts(log.run_summary, isZh);
@@ -3097,7 +3103,7 @@ export default function AccountTasksContent() {
                                             type="button"
                                             onClick={() => setSelectedHistoryIndex(index)}
                                             className={cn(
-                                                "w-full rounded-2xl border px-3 py-2.5 text-left transition-colors",
+                                                "w-[220px] shrink-0 rounded-2xl border px-3 py-2 text-left transition-colors lg:w-full lg:py-2.5",
                                                 active ? "border-[var(--accent)] bg-[var(--accent-muted)]" : "border-[var(--border-secondary)] bg-[var(--bg-primary)] hover:border-[var(--text-tertiary)]"
                                             )}
                                         >
@@ -3107,14 +3113,14 @@ export default function AccountTasksContent() {
                                                     {log.run_summary ? runSummaryStatusLabel(log.run_summary, isZh) : (log.success ? t("success") : t("failure"))}
                                                 </StatusBadge>
                                             </div>
-                                            <div className="mt-2 line-clamp-2 text-xs leading-5 text-[var(--text-secondary)]">
+                                            <div className="mt-1.5 line-clamp-1 text-xs leading-5 text-[var(--text-secondary)] lg:mt-2 lg:line-clamp-2">
                                                 {log.message || diagnostics.directReason || (isZh ? "无结果消息" : "No result message")}
                                             </div>
-                                            <div className="mt-2 text-[10px] text-[var(--text-tertiary)]">
+                                            <div className="mt-1.5 text-[10px] text-[var(--text-tertiary)] lg:mt-2">
                                                 {diagnostics.completedSteps}/{diagnostics.totalSteps || "-"} {isZh ? "步骤" : "steps"} · {diagnostics.duration}
                                             </div>
                                             {summaryParts.length > 0 ? (
-                                                <div className="mt-2 line-clamp-2 text-[10px] text-[var(--text-tertiary)]">
+                                                <div className="hidden lg:mt-2 lg:line-clamp-2 lg:block lg:text-[10px] lg:text-[var(--text-tertiary)]">
                                                     {summaryParts.slice(0, 3).join(" · ")}
                                                 </div>
                                             ) : null}
@@ -3125,8 +3131,8 @@ export default function AccountTasksContent() {
                         </aside>
 
                         <section className="flex min-h-0 min-w-0 flex-col">
-                            <div className="mx-4 mt-4 flex shrink-0 flex-col gap-3 rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] p-3 md:mx-5 md:mt-5 md:flex-row md:items-center md:justify-between">
-                                <div className="flex flex-wrap gap-2">
+                            <div className="mx-3 mt-3 flex shrink-0 flex-col gap-2 rounded-2xl border border-[var(--border-secondary)] bg-[var(--bg-primary)] p-2 md:mx-5 md:mt-5 md:flex-row md:items-center md:justify-between md:p-3">
+                                <div className="flex flex-nowrap gap-1 overflow-x-auto custom-scrollbar pb-0.5 md:flex-wrap md:gap-2 md:overflow-visible md:pb-0">
                                     {([
                                         ["read", isZh ? "阅读视图" : "Read"],
                                         ["ai", isZh ? "AI 排查视图" : "AI Debug"],
@@ -3137,7 +3143,7 @@ export default function AccountTasksContent() {
                                         </Button>
                                     ))}
                                 </div>
-                                <div className="flex flex-wrap gap-2">
+                                <div className="flex flex-nowrap gap-1 overflow-x-auto custom-scrollbar pb-0.5 md:flex-wrap md:gap-2 md:overflow-visible md:pb-0">
                                     {historyLogView === "read" ? (
                                         <>
                                             <Button size="sm" variant={historyFailureOnly ? "default" : "secondary"} onClick={() => setHistoryFailureOnly((value) => !value)}>
@@ -3170,7 +3176,7 @@ export default function AccountTasksContent() {
                                 </div>
                             </div>
 
-                            <div className="min-h-0 flex-1 overflow-y-auto p-4 custom-scrollbar md:p-5">
+                            <div className="min-h-0 flex-1 overflow-y-auto p-3 custom-scrollbar md:p-5">
                                 {historyLogView === "read" ? (
                                 <div className="space-y-4">
                                     {selectedHistoryLog.run_summary ? (
