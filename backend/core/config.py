@@ -85,7 +85,7 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 14
     refresh_cookie_name: str = "tg-signer-refresh"
-    refresh_cookie_secure: bool = True
+    refresh_cookie_secure: bool = False
     refresh_cookie_samesite: str = "lax"
     refresh_cookie_path: str = "/api"
     cors_allow_origin_regex: str = r"https?://(localhost|127\.0\.0\.1)(:\d+)?$"

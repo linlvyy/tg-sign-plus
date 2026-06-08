@@ -162,6 +162,8 @@ services:
       - TG_API_ID=your-api-id
       - TG_API_HASH=your-api-hash
       - TZ=Asia/Shanghai
+      # 如通过 HTTPS 反向代理访问，建议开启：
+      # - APP_REFRESH_COOKIE_SECURE=true
       # 可选：AI 功能配置
       - OPENAI_API_KEY=your-openai-key
       - OPENAI_BASE_URL=https://api.openai.com/v1
@@ -192,6 +194,12 @@ docker run -d \
   --restart unless-stopped \
   sfun/tg-sign-plus:latest
 ```
+
+如果使用 `http://服务器IP:8080` 或局域网 IP 直接访问，请保持
+`APP_REFRESH_COOKIE_SECURE` 未设置或为 `false`。否则浏览器不会保存登录后
+下发的 CSRF cookie，后续保存配置、修改用户名等写操作会返回 403。
+如通过 HTTPS 反向代理访问，可在 `docker run` 中额外添加
+`-e APP_REFRESH_COOKIE_SECURE=true`。
 
 ### 构建自定义镜像
 
@@ -390,6 +398,7 @@ tg-signer list my_account
 | `TZ` | 时区 | `Asia/Shanghai` |
 | `BASE_DIR` | 数据目录 | `/data` |
 | `DATABASE_URL` | 数据库连接（支持 PostgreSQL）；未设置时使用可写数据目录下的 `db.sqlite`，Docker 通常为 `/data/db.sqlite` | `sqlite:////data/db.sqlite` |
+| `APP_REFRESH_COOKIE_SECURE` | 仅通过 HTTPS 访问时设为 `true`；HTTP/IP 直连需保持 `false`，否则写操作会因 CSRF cookie 丢失返回 403 | `false` |
 | `OPENAI_API_KEY` | OpenAI API 密钥 | - |
 | `OPENAI_BASE_URL` | OpenAI API 地址 | `https://api.openai.com/v1` |
 | `OPENAI_MODEL` | 使用的模型 | `gpt-4o-mini` |
