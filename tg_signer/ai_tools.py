@@ -17,6 +17,41 @@ from tg_signer.utils import UserInput, print_to_user
 DEFAULT_MODEL = "gpt-4o"
 
 
+def _coerce_option_index(option) -> int | None:
+    if option is None or isinstance(option, bool):
+        return None
+    try:
+        return int(str(option).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _option_index_from_ai_response(value, options: list[tuple[int, str]] | None = None) -> int | None:
+    if isinstance(value, dict):
+        for key in ("option", "index", "answer", "value", "text"):
+            option_index = _coerce_option_index(value.get(key))
+            if option_index is not None:
+                return option_index
+        option_text = next(
+            (
+                str(value.get(key) or "").strip()
+                for key in ("answer", "value", "text", "option")
+                if str(value.get(key) or "").strip()
+            ),
+            "",
+        )
+    else:
+        option_index = _coerce_option_index(value)
+        if option_index is not None:
+            return option_index
+        option_text = str(value or "").strip()
+    if option_text and options:
+        for index, text in options:
+            if option_text == text:
+                return index
+    return None
+
+
 def _read_float_env(name: str, default: float, minimum: float = 1.0) -> float:
     try:
         return max(float(os.environ.get(name, default)), minimum)
@@ -133,7 +168,7 @@ class AITools:
         client: "AsyncOpenAI" = None,
         model: str = None,
         temperature=0.1,
-    ) -> int:
+    ) -> int | None:
         sys_prompt = """你是一个**图片识别助手**，可以根据提供的图片和问题选择出**唯一正确**的选项，如果你觉得每个都不对，也要给出一个你认为最符合的答案，以如下JSON格式输出你的回复：
     {
       "option": 1,  // 整数，表示选项序号，从1开始，与输入选项编号保持一致。
@@ -169,8 +204,12 @@ class AITools:
             temperature=temperature,
         )
         message = completion.choices[0].message
-        result = json_repair.loads(message.content)
-        return int(result["option"])
+        content = message.content or ""
+        try:
+            result = json_repair.loads(content or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            result = content
+        return _option_index_from_ai_response(result, options)
 
     async def extract_text_by_image(
         self,

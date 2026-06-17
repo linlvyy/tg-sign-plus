@@ -329,7 +329,11 @@ async def choose_option_by_image(
                 event="ai_choose_image_result_index",
                 meta={"chat_id": message.chat.id, "message_id": message.id},
             )
-            if not 1 <= result_index <= len(options):
+            if (
+                isinstance(result_index, bool)
+                or not isinstance(result_index, int)
+                or not 1 <= result_index <= len(options)
+            ):
                 log(
                     f"AI 返回了非法选项序号: {result_index}，可选范围为 1 到 {len(options)}",
                     level="WARNING",

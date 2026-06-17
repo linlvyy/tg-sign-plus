@@ -1268,13 +1268,22 @@ class SignEventRunner:
         )
         if self._response_action_finished_skip(message, source="image_option"):
             return True
-        if not 1 <= result_index <= len(buttons):
+        if (
+            isinstance(result_index, bool)
+            or not isinstance(result_index, int)
+            or not 1 <= result_index <= len(buttons)
+        ):
             self.log(
                 f"事件引擎 AI 返回非法选项序号: {result_index}",
                 level="WARNING",
                 stage="action",
                 event="event_engine_invalid_option_index",
-                meta={"chat_id": message.chat.id, "message_id": message.id},
+                meta={
+                    "chat_id": message.chat.id,
+                    "message_id": message.id,
+                    "result_index": result_index,
+                    "option_count": len(buttons),
+                },
             )
             return False
         button = buttons[result_index - 1]
