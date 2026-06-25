@@ -18,7 +18,8 @@ from backend.services.sign_task_log_handler import TaskLogHandler
 class BackendUserSigner(UserSigner):
     """后端专用 UserSigner，适配数据库配置并禁止交互输入。"""
 
-    def __init__(self, *args, chat_cache_loader=None, **kwargs):
+    def __init__(self, *args, chat_cache_loader=None, log_run_id: str | None = None, **kwargs):
+        self._log_run_id = log_run_id
         super().__init__(
             *args,
             chat_cache_loader=chat_cache_loader or self._load_backend_chat_cache,
@@ -47,6 +48,8 @@ class BackendUserSigner(UserSigner):
             "flow_event": event,
             "flow_meta": meta or {},
         })
+        if self._log_run_id:
+            extra["flow_run_id"] = self._log_run_id
         super().log(msg, level=level, extra=extra, **kwargs)
 
     @staticmethod

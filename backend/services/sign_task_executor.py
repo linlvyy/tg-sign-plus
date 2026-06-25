@@ -5,9 +5,11 @@ import logging
 import os
 import time
 import traceback
+import uuid
 from typing import Any, Dict, List
 
 from backend.core.config import get_settings
+from backend.services.sign_task_log_context import reset_sign_task_run_id, set_sign_task_run_id
 from backend.services.sign_task_log_handler import TaskLogHandler
 from backend.services.sign_task_runtime_contract import (
     WorkerExecutionPlan,
@@ -448,6 +450,7 @@ class SignTaskExecutor:
         self._active_tasks[task_key] = True
         self._active_logs[task_key] = []
         self._active_log_offsets[task_key] = 0
+        task_run_id = uuid.uuid4().hex
         active_log_offset_ref = {"value": 0}
         flow_items: List[Dict[str, Any]] = []
         flow_logger = TaskFlowLogger(
@@ -462,7 +465,12 @@ class SignTaskExecutor:
         if tg_logger.getEffectiveLevel() > logging.INFO:
             tg_logger.setLevel(logging.INFO)
             should_restore_tg_logger_level = True
-        log_handler = TaskLogHandler(self._active_logs[task_key], flow_items, active_log_offset_ref)
+        log_handler = TaskLogHandler(
+            self._active_logs[task_key],
+            flow_items,
+            active_log_offset_ref,
+            run_id=task_run_id,
+        )
         log_handler.setLevel(logging.INFO)
         tg_logger.addHandler(log_handler)
 
@@ -476,6 +484,7 @@ class SignTaskExecutor:
         task_timeout_seconds: int | None = None
         account_lock_acquired = False
         run_summary: Dict[str, Any] = {}
+        log_context_token = None
 
         try:
             lock_wait_started_at = time.perf_counter()
@@ -516,6 +525,7 @@ class SignTaskExecutor:
                     f"account lock wait timed out after {account_lock_timeout_seconds}s"
                 )
             account_lock_acquired = True
+            log_context_token = set_sign_task_run_id(task_run_id)
             lock_wait_seconds = time.perf_counter() - lock_wait_started_at
             flow_logger.append(
                 "账号执行锁已获取",
@@ -638,6 +648,7 @@ class SignTaskExecutor:
                 api_id=api_id,
                 api_hash=api_hash,
                 no_updates=worker_plan.no_updates,
+                log_run_id=task_run_id,
             )
 
             task_timeout_seconds = worker_plan.task_timeout_seconds
@@ -921,6 +932,9 @@ class SignTaskExecutor:
                         "total_attempts": total_attempts,
                     },
                 )
+            if log_context_token is not None:
+                reset_sign_task_run_id(log_context_token)
+                log_context_token = None
             tg_logger.removeHandler(log_handler)
             if should_restore_tg_logger_level:
                 tg_logger.setLevel(previous_tg_logger_level)

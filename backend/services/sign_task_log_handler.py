@@ -4,6 +4,7 @@ import logging
 import re
 from typing import Dict, List
 
+from backend.services.sign_task_log_context import get_sign_task_run_id
 from backend.services.task_flow_logger import TaskFlowLogger
 
 
@@ -30,8 +31,10 @@ class TaskLogHandler(logging.Handler):
         flow_items: List[Dict[str, object]],
         offset_ref: Dict[str, int],
         max_lines: int = 1000,
+        run_id: str | None = None,
     ):
         super().__init__()
+        self.run_id = run_id
         self.flow_logger = TaskFlowLogger(
             log_list,
             flow_items,
@@ -41,6 +44,11 @@ class TaskLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
+            if self.run_id is not None:
+                record_run_id = getattr(record, "flow_run_id", None)
+                current_run_id = record_run_id or get_sign_task_run_id()
+                if current_run_id != self.run_id:
+                    return
             text = record.getMessage()
             stage = getattr(record, "flow_stage", "message")
             event = getattr(record, "flow_event", "log")
