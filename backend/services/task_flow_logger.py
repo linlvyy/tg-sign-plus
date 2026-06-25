@@ -57,6 +57,7 @@ class TaskFlowLogger:
         stage: str = "task",
         event: str = "info",
         meta: Optional[Dict[str, Any]] = None,
+        visible: bool = True,
     ) -> Dict[str, Any]:
         ts = self._now_iso()
         item = {
@@ -66,12 +67,14 @@ class TaskFlowLogger:
             "event": event or "info",
             "text": str(text),
             "meta": self._normalize_meta(meta),
+            "text_visible": bool(visible),
         }
         self._flow_items.append(item)
-        self._text_logs.append(f"{self._short_ts(ts)} - {text}")
+        if visible:
+            self._text_logs.append(f"{self._short_ts(ts)} - {text}")
         while len(self._text_logs) > self._max_lines:
             self._text_logs.pop(0)
-            if self._flow_items:
-                self._flow_items.pop(0)
             self._offset_ref["value"] += 1
+        while len(self._flow_items) > self._max_lines:
+            self._flow_items.pop(0)
         return item

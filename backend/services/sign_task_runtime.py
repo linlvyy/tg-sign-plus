@@ -40,6 +40,7 @@ class BackendUserSigner(UserSigner):
         stage: str = "message",
         event: str = "log",
         meta: Optional[Dict[str, object]] = None,
+        visible: bool = True,
         **kwargs,
     ):
         extra = kwargs.pop("extra", {}) or {}
@@ -47,6 +48,7 @@ class BackendUserSigner(UserSigner):
             "flow_stage": stage,
             "flow_event": event,
             "flow_meta": meta or {},
+            "flow_visible": visible,
         })
         if self._log_run_id:
             extra["flow_run_id"] = self._log_run_id

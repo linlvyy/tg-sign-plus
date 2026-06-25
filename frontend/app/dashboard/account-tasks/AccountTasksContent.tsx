@@ -201,6 +201,10 @@ const formatHistoryStepTitle = (index: number, firstItem: SignTaskFlowItem, isZh
     return `${isZh ? "步骤" : "Step"} ${index}`;
 };
 
+const isVisibleFlowItem = (item: SignTaskFlowItem) => item.text_visible !== false;
+
+const visibleFlowItems = (items: SignTaskFlowItem[] | undefined) => (items || []).filter(isVisibleFlowItem);
+
 const groupHistoryFlowItemsByStep = (flowItems: SignTaskFlowItem[] | undefined, isZh: boolean): TaskHistoryStepGroup[] => {
     if (!flowItems || flowItems.length === 0) {
         return [];
@@ -351,7 +355,7 @@ const formatInlineMeta = (meta: SignTaskFlowItem["meta"] | undefined, detailed =
 };
 
 const getHistoryDiagnostics = (log: SignTaskHistoryItem | undefined, isZh: boolean) => {
-    const items = log?.flow_items || [];
+    const items = visibleFlowItems(log?.flow_items);
     const groups = groupHistoryFlowItemsByStep(items, isZh);
     const errorItem = [...items].reverse().find((item) => item.level === "error");
     const warningItem = [...items].reverse().find((item) => item.level === "warning");
@@ -376,7 +380,7 @@ const getHistoryDiagnostics = (log: SignTaskHistoryItem | undefined, isZh: boole
 };
 
 const formatHistoryTimelineText = (log: SignTaskHistoryItem, language: string, failureOnly = false) => {
-    const items = log.flow_items || [];
+    const items = visibleFlowItems(log.flow_items);
     const visibleItems = failureOnly ? items.filter((item) => item.level === "error" || item.level === "warning") : items;
     if (visibleItems.length > 0) {
         return visibleItems.map((item) => {
@@ -403,6 +407,7 @@ const formatHistoryForAi = ({
     const diagnostics = getHistoryDiagnostics(log, isZh);
     const summary = log.run_summary;
     const summaryParts = compactRunSummaryParts(summary, isZh);
+    const humanItems = visibleFlowItems(log.flow_items);
     const chatId = log.flow_items?.find((item) => item.meta?.chat_id)?.meta?.chat_id;
     const errorMeta = diagnostics.errorItem?.meta ? JSON.stringify(diagnostics.errorItem.meta, null, 2) : "{}";
 
@@ -417,7 +422,7 @@ const formatHistoryForAi = ({
 - 结构化状态：${summary ? runSummaryStatusLabel(summary, isZh) : "无"}
 - 结构化摘要：${summaryParts.length ? summaryParts.join("；") : "无"}
 - 机器人消息：${log.message || "无"}
-- 日志条数：${log.flow_items?.length || log.flow_logs?.length || 0}
+- 日志条数：${humanItems.length}${log.flow_items && log.flow_items.length !== humanItems.length ? `（结构化事件 ${log.flow_items.length}）` : ""}
 
 ## 失败摘要
 - 失败阶段：${diagnostics.failedStage}
@@ -461,7 +466,8 @@ const HistoryTimeline = ({ items, isZh, language, failureOnly, expandDetails }: 
     failureOnly: boolean;
     expandDetails: boolean;
 }) => {
-    const visibleItems = failureOnly ? items.filter((item) => item.level === "error" || item.level === "warning") : items;
+    const humanItems = visibleFlowItems(items);
+    const visibleItems = failureOnly ? humanItems.filter((item) => item.level === "error" || item.level === "warning") : humanItems;
     if (visibleItems.length === 0) {
         return <div className="rounded-2xl border border-dashed border-[var(--border-secondary)] bg-[var(--bg-primary)] px-4 py-4 text-sm text-[var(--text-tertiary)]">{isZh ? "当前筛选下没有日志" : "No logs for this filter"}</div>;
     }
@@ -504,9 +510,10 @@ const HistoryFlowGroups = ({
     failureOnly: boolean;
     expandDetails: boolean;
 }) => {
-    const stepGroups = groupHistoryFlowItemsByStep(flowItems, isZh);
+    const humanItems = visibleFlowItems(flowItems);
+    const stepGroups = groupHistoryFlowItemsByStep(humanItems, isZh);
     if (stepGroups.length === 0) {
-        return <HistoryTimeline items={flowItems} isZh={isZh} language={language} failureOnly={failureOnly} expandDetails={expandDetails} />;
+        return <HistoryTimeline items={humanItems} isZh={isZh} language={language} failureOnly={failureOnly} expandDetails={expandDetails} />;
     }
 
     const visibleGroups = failureOnly ? stepGroups.filter((group) => getTaskHistoryStepStatus(group.items) === "failed" || group.items.some((item) => item.level === "warning")) : stepGroups;

@@ -794,6 +794,7 @@ class TaskHistoryFlowItem(BaseModel):
     event: str = "info"
     text: str = ""
     meta: Dict[str, Any] = Field(default_factory=dict)
+    text_visible: bool = True
 
 
 class TaskHistoryDiagnosticCheck(BaseModel):

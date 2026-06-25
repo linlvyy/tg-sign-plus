@@ -280,6 +280,7 @@ class BaseUserWorker(Generic[ConfigT]):
         self._config = value
 
     def log(self, msg, level: str = "INFO", **kwargs):
+        kwargs.pop("visible", None)
         msg = f"账户「{self._account}」- 任务「{self.task_name}」: {msg}"
         if level.upper() == "INFO":
             logger.info(msg, **kwargs)
@@ -834,6 +835,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             f"开始预热会话: chat_id={chat.chat_id}",
             stage="preheat",
             event="preheat_start",
+            visible=False,
             meta={"chat_id": chat.chat_id, "chat_name": getattr(chat, "name", "")},
         )
         try:
@@ -843,6 +845,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 f"预热会话成功: chat_id={chat.chat_id}",
                 stage="preheat",
                 event="preheat_primary_success",
+                visible=False,
                 meta={"chat_id": chat.chat_id},
             )
         except Exception as e:
@@ -1064,7 +1067,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
 
         while True:
             if need_update_handlers and message_handler_ref is None:
-                self.log(f"adding message handlers for chats: {chat_ids}")
+                self.log(f"adding message handlers for chats: {chat_ids}", visible=False)
                 message_handler_ref = self.app.add_handler(
                     MessageHandler(self.on_message, filters.chat(chat_ids))
                 )
@@ -1074,7 +1077,7 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
             try:
                 async with self.app:
                     now = get_now()
-                    self.log(f"当前时间: {now}")
+                    self.log(f"当前时间: {now}", visible=False)
                     now_date_str = str(now.date())
                     self.context = self.ensure_ctx()
                     if need_sign(now_date_str):

@@ -1213,6 +1213,7 @@ export interface SignTaskFlowItem {
   event: string;
   text: string;
   meta?: Record<string, string | number | boolean | null>;
+  text_visible?: boolean;
 }
 
 export interface SignTaskDiagnosticCheck {

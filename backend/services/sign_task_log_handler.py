@@ -54,6 +54,7 @@ class TaskLogHandler(logging.Handler):
             event = getattr(record, "flow_event", "log")
             level = record.levelname.lower()
             meta = getattr(record, "flow_meta", None)
+            visible = bool(getattr(record, "flow_visible", True))
             if event == "log":
                 parsed = self._parse_generic_worker_log(text)
                 if parsed is not None:
@@ -64,6 +65,7 @@ class TaskLogHandler(logging.Handler):
                 stage=stage,
                 event=event,
                 meta=meta,
+                visible=visible,
             )
         except Exception:
             self.handleError(record)

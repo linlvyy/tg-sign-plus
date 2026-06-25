@@ -492,6 +492,7 @@ class SignEventRunner:
                 "事件引擎跳过旧尝试按钮弹窗文本",
                 stage="result",
                 event="event_engine_stale_callback_text_skipped",
+                visible=False,
                 meta={
                     "chat_id": chat_id or self.chat.chat_id,
                     "message_id": message_id,
@@ -506,6 +507,7 @@ class SignEventRunner:
                 "事件引擎已结束，跳过晚到按钮弹窗文本",
                 stage="result",
                 event="event_engine_callback_text_skipped_after_finished",
+                visible=False,
                 meta={
                     "chat_id": chat_id or self.chat.chat_id,
                     "message_id": message_id,
@@ -644,6 +646,7 @@ class SignEventRunner:
             "事件引擎重置尝试状态",
             stage="message",
             event="event_engine_attempt_state_reset",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "previous_attempt_epoch": previous_attempt_epoch,
@@ -669,6 +672,7 @@ class SignEventRunner:
                 "事件引擎跳过旧尝试消息处理标记",
                 stage="message",
                 event="event_engine_stale_attempt_processed_mark_skipped",
+                visible=False,
                 meta={
                     "chat_id": self.chat.chat_id,
                     "message_version_hash": self._message_version_hash(version),
@@ -719,6 +723,7 @@ class SignEventRunner:
             "事件引擎响应动作已推进",
             stage="action",
             event="event_engine_response_action_advanced",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None) if message is not None else None,
@@ -749,6 +754,7 @@ class SignEventRunner:
             "事件引擎响应动作已处理但未推进",
             stage="action",
             event="event_engine_response_action_not_advanced",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None),
@@ -788,6 +794,7 @@ class SignEventRunner:
             "事件引擎已结束，跳过晚到响应动作副作用",
             stage="action",
             event="event_engine_response_action_skipped_after_finished",
+            visible=False,
             meta={
                 "chat_id": message.chat.id,
                 "message_id": getattr(message, "id", None),
@@ -952,6 +959,7 @@ class SignEventRunner:
                 "事件引擎硬超时后台任务已取消",
                 stage="action",
                 event=EVENT_ENGINE_HARD_TIMEOUT_LATE_CANCELLED,
+                visible=False,
                 meta=meta | {"operation": operation},
             )
         except Exception:
@@ -976,6 +984,7 @@ class SignEventRunner:
                     "事件引擎硬超时后台任务晚到完成",
                     stage="action",
                     event=EVENT_ENGINE_HARD_TIMEOUT_LATE_COMPLETED,
+                    visible=False,
                     meta=meta | {"operation": operation},
                 )
 
@@ -1750,6 +1759,7 @@ class SignEventRunner:
                 "事件引擎响应消息已发送",
                 stage="action",
                 event="event_engine_response_message_sent",
+                visible=False,
                 meta={
                     "chat_id": message.chat.id,
                     "message_id": getattr(sent, "id", None),
@@ -2200,6 +2210,7 @@ class SignEventRunner:
                 "事件引擎任务已完成，取消运行期历史补漏",
                 stage="message",
                 event="event_engine_history_rescue_cancelled",
+                visible=False,
                 meta={
                     "chat_id": self.chat.chat_id,
                     "source": "rescue",
@@ -2305,6 +2316,7 @@ class SignEventRunner:
             level="WARNING",
             stage="result",
             event="event_engine_timeout_state",
+            visible=False,
             meta=self._state_snapshot_meta(),
         )
 
@@ -2325,6 +2337,7 @@ class SignEventRunner:
             level="success" if result.status in {EventRunStatus.SUCCESS, EventRunStatus.CHECKED} else "ERROR",
             stage="result",
             event="event_engine_final_state",
+            visible=False,
             meta=meta,
         )
 
@@ -2375,6 +2388,7 @@ class SignEventRunner:
             "事件引擎按钮回调结果",
             stage="action",
             event="event_engine_button_callback_result",
+            visible=False,
             meta={
                 "chat_id": message.chat.id,
                 "message_id": message.id,
@@ -2405,6 +2419,7 @@ class SignEventRunner:
             "事件引擎跳过已点击按钮版本",
             stage="action",
             event="event_engine_button_click_duplicate_skipped",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None),
@@ -2460,6 +2475,7 @@ class SignEventRunner:
             "事件引擎跳过已处理/处理中消息版本",
             stage="message",
             event="event_engine_message_skip_recorded",
+            visible=False,
             meta={
                 "chat_id": getattr(chat, "id", self.chat.chat_id),
                 "message_id": getattr(message, "id", None),
@@ -2699,6 +2715,7 @@ class SignEventRunner:
                 "事件引擎已有历史扫描运行中，跳过并发扫描",
                 stage="message",
                 event="event_engine_history_scan_concurrent_skipped",
+                visible=False,
                 meta={
                     "chat_id": self.chat.chat_id,
                     "source": source,
@@ -2729,6 +2746,7 @@ class SignEventRunner:
                 "事件引擎历史补漏已暂停，跳过本次扫描",
                 stage="message",
                 event="event_engine_history_rescue_suspended",
+                visible=False,
                 meta={
                     "chat_id": self.chat.chat_id,
                     "source": source,
@@ -2748,6 +2766,7 @@ class SignEventRunner:
                 "事件引擎扫描最近历史消息进行补漏",
                 stage="message",
                 event="event_engine_history_rescue_started",
+                visible=False,
                 meta={"chat_id": self.chat.chat_id, "limit": self.history_limit},
             )
         async def collect_history_messages():
@@ -2969,6 +2988,7 @@ class SignEventRunner:
             level="WARNING",
             stage="message",
             event="event_engine_history_scan_cancelled",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "source": source,
@@ -3013,6 +3033,7 @@ class SignEventRunner:
             "事件引擎历史扫描完成",
             stage="message",
             event="event_engine_history_scan_completed",
+            visible=status not in {"idle"},
             meta={
                 "chat_id": self.chat.chat_id,
                 "source": source,
@@ -3030,6 +3051,7 @@ class SignEventRunner:
             "事件引擎复查已处理消息的编辑版本",
             stage="message",
             event="event_engine_history_tracked_message_rechecked",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None),
@@ -3046,6 +3068,7 @@ class SignEventRunner:
             "事件引擎历史扫描跳过已处理消息版本",
             stage="message",
             event="event_engine_history_duplicate_skipped",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None),
@@ -3087,6 +3110,7 @@ class SignEventRunner:
             "事件引擎历史扫描跳过未处理消息重复版本",
             stage="message",
             event="event_engine_history_unhandled_duplicate_skipped",
+            visible=False,
             meta={
                 "chat_id": self.chat.chat_id,
                 "message_id": getattr(message, "id", None),
@@ -3126,6 +3150,7 @@ class SignEventRunner:
             "事件引擎历史扫描过滤消息",
             stage="message",
             event="event_engine_history_message_filtered",
+            visible=False,
             meta=meta,
         )
 
@@ -3165,6 +3190,7 @@ class SignEventRunner:
                         "事件引擎跳过过期历史消息",
                         stage="message",
                         event="event_engine_history_message_expired",
+                        visible=False,
                         meta={
                             "chat_id": self.chat.chat_id,
                             "message_id": getattr(message, "id", None),

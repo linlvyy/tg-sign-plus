@@ -186,6 +186,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="session",
                     event="client_cleanup_late_cancelled",
+                    visible=False,
                     meta=base_meta,
                 )
                 pass
@@ -206,6 +207,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="session",
                     event="client_cleanup_late_completed",
+                    visible=False,
                     meta=base_meta,
                 )
 
@@ -249,6 +251,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="task",
                     event="task_run_late_cancelled",
+                    visible=False,
                     meta=base_meta,
                 )
                 pass
@@ -269,6 +272,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="task",
                     event="task_run_late_completed",
+                    visible=False,
                     meta=base_meta,
                 )
 
@@ -532,6 +536,7 @@ class SignTaskExecutor:
                 level="info",
                 stage="task",
                 event="account_lock_acquired",
+                visible=lock_wait_seconds > 0.5,
                 meta={
                     "operation": "account_lock.acquire",
                     "timeout_scope": "account_lock",
@@ -623,6 +628,7 @@ class SignTaskExecutor:
                 level="info",
                 stage="session",
                 event="updates_mode",
+                visible=False,
                 meta={"requires_updates": requires_updates},
             )
             flow_logger.append(
@@ -630,6 +636,7 @@ class SignTaskExecutor:
                 level="info",
                 stage="task",
                 event="task_retry_config",
+                visible=configured_retry_count > 0,
                 meta={
                     "retry_count": configured_retry_count,
                     "total_attempts": worker_plan.total_attempts,
@@ -657,6 +664,7 @@ class SignTaskExecutor:
                 level="info",
                 stage="task",
                 event="task_timeout_config",
+                visible=False,
                 meta={"timeout_seconds": task_timeout_seconds},
             )
 
@@ -707,6 +715,7 @@ class SignTaskExecutor:
                 level="info",
                 stage="task",
                 event="global_concurrency_acquired",
+                visible=global_wait_seconds > 0.5,
                 meta={
                     "operation": "global_concurrency.acquire",
                     "timeout_scope": "global_concurrency",
@@ -726,6 +735,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="task",
                     event="worker_execution_contract",
+                    visible=False,
                     meta=worker_meta,
                 )
                 last_exception = None
@@ -805,6 +815,7 @@ class SignTaskExecutor:
                         level="info",
                         stage="task",
                         event="global_concurrency_released",
+                        visible=False,
                         meta={
                             "operation": "global_concurrency.release",
                             "timeout_scope": "global_concurrency",
@@ -834,7 +845,7 @@ class SignTaskExecutor:
             flow_logger.append(
                 error_msg,
                 level="error",
-            stage="result",
+                stage="result",
                 event="task_failed",
                 meta={
                     "task_name": task_name,
@@ -869,6 +880,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="session",
                     event="client_cleanup_started",
+                    visible=False,
                     meta=cleanup_meta,
                 )
                 cleanup_task = asyncio.create_task(
@@ -900,6 +912,7 @@ class SignTaskExecutor:
                         level="info",
                         stage="session",
                         event="client_cleanup_completed",
+                        visible=False,
                         meta={**cleanup_meta, **cleanup_report},
                     )
                 except Exception as cleanup_exc:
@@ -924,6 +937,7 @@ class SignTaskExecutor:
                     level="info",
                     stage="task",
                     event="account_lock_released",
+                    visible=False,
                     meta={
                         "operation": "account_lock.release",
                         "timeout_scope": "account_lock",

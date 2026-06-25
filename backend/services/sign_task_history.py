@@ -93,6 +93,7 @@ class SignTaskHistoryService:
                     "event": str(item.get("event", "info") or "info"),
                     "text": text,
                     "meta": normalized_meta,
+                    "text_visible": bool(item.get("text_visible", True)),
                 }
             )
         return trimmed
