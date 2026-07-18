@@ -33,6 +33,7 @@ logger = logging.getLogger("backend.qr_login")
 # 全局存储临时的登录 session
 _login_sessions = {}
 _qr_login_sessions = {}
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 class TelegramService:
@@ -59,21 +60,8 @@ class TelegramService:
 
         accounts = []
 
-        pending_accounts = set()
-        for data in _login_sessions.values():
-            name = data.get("account_name")
-            if name:
-                pending_accounts.add(name)
-        for data in _qr_login_sessions.values():
-            name = data.get("account_name")
-            status = data.get("status")
-            if name and status != "success":
-                pending_accounts.add(name)
-
         try:
             for account_name in list_account_names():
-                if account_name in pending_accounts:
-                    continue
                 profile = get_account_profile(account_name)
                 accounts.append(
                     {
@@ -94,6 +82,29 @@ class TelegramService:
             logger = logging.getLogger("backend.telegram")
             logger.error(f"获取账号列表失败: {e}", exc_info=True)
             return []
+
+    async def _refresh_account_chats_in_background(self, account_name: str) -> None:
+        """登录完成后异步预热聊天缓存，不阻塞账号保存和展示。"""
+        try:
+            from backend.services.sign_tasks import get_sign_task_service
+
+            await asyncio.wait_for(
+                get_sign_task_service().refresh_account_chats(account_name),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("账号 %s 登录后的聊天缓存刷新超时", account_name)
+        except Exception as exc:
+            logger.warning(
+                "账号 %s 登录后的聊天缓存刷新失败: %s", account_name, exc
+            )
+
+    def _schedule_account_chat_refresh(self, account_name: str) -> None:
+        task = asyncio.create_task(
+            self._refresh_account_chats_in_background(account_name)
+        )
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     @staticmethod
     def _normalize_login_token_expires(expires: Optional[int]) -> int:
@@ -648,20 +659,13 @@ class TelegramService:
                     me = await client.get_me()
                     await _persist_session_string()
                     _persist_proxy_setting()
-                    try:
-                        from backend.services.sign_tasks import get_sign_task_service
-
-                        await asyncio.wait_for(
-                            get_sign_task_service().refresh_account_chats(account_name),
-                            timeout=30,
-                        )
-                    except Exception:
-                        pass
 
                     # 断开连接并清理
                     await client.disconnect()
                     _login_sessions.pop(session_key, None)
+                    self._accounts_cache = None
                     _release_account_lock()
+                    self._schedule_account_chat_refresh(account_name)
 
                     return {
                         "success": True,
@@ -682,20 +686,13 @@ class TelegramService:
                         me = await client.get_me()
                         await _persist_session_string()
                         _persist_proxy_setting()
-                        try:
-                            from backend.services.sign_tasks import get_sign_task_service
-
-                            await asyncio.wait_for(
-                                get_sign_task_service().refresh_account_chats(account_name),
-                                timeout=30,
-                            )
-                        except Exception:
-                            pass
 
                         # 断开连接并清理
                         await client.disconnect()
                         _login_sessions.pop(session_key, None)
+                        self._accounts_cache = None
                         _release_account_lock()
+                        self._schedule_account_chat_refresh(account_name)
 
                         return {
                             "success": True,
@@ -776,10 +773,10 @@ class TelegramService:
             from backend.services.sign_tasks import get_sign_task_service
 
             get_sign_task_service().ensure_account_chat_cache_meta(account_name)
-            await get_sign_task_service().refresh_account_chats(account_name)
         except Exception:
             pass
         self._accounts_cache = None
+        self._schedule_account_chat_refresh(account_name)
 
     def _log_qr_state(
         self, login_id: str, state: str, data: Optional[Dict[str, Any]] = None

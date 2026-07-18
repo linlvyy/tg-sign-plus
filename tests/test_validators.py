@@ -26,3 +26,24 @@ def test_account_name_rejects_unsafe_characters(name: str) -> None:
 def test_admin_username_remains_ascii_only() -> None:
     with pytest.raises(ValidationError):
         validate_username("管理员")
+
+
+def test_saved_account_is_visible_while_login_cleanup_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.services import telegram
+
+    monkeypatch.setattr(telegram, "list_account_names", lambda: ["木木44"])
+    monkeypatch.setattr(
+        telegram,
+        "get_account_profile",
+        lambda _name: {"chat_cache_ttl_minutes": 1440},
+    )
+    telegram._login_sessions["木木44_+440000000"] = {
+        "account_name": "木木44",
+    }
+    try:
+        accounts = telegram.TelegramService().list_accounts(force_refresh=True)
+        assert [account["name"] for account in accounts] == ["木木44"]
+    finally:
+        telegram._login_sessions.pop("木木44_+440000000", None)
