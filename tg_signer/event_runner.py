@@ -50,6 +50,44 @@ class EventRunStatus(str, Enum):
     FAILED = "failed"
 
 
+_CALLBACK_CHALLENGE_BLOCKED_RE = re.compile(
+    r"(?:未完成|请先完成|尚未完成).{0,12}(?:人机验证|当前题目|验证)"
+    r"|(?:人机验证|验证码|选择).{0,8}(?:失败|错误|不正确)",
+    re.IGNORECASE,
+)
+
+
+def _interaction_content_signature(message: Message) -> tuple:
+    """Build a stable signature that ignores volatile Telegram file/date fields."""
+    photo = getattr(message, "photo", None)
+    reply_markup = getattr(message, "reply_markup", None)
+    rows = getattr(reply_markup, "inline_keyboard", None) or []
+    buttons = tuple(
+        tuple(
+            (
+                str(getattr(button, "text", "") or ""),
+                getattr(button, "callback_data", None),
+                getattr(button, "url", None),
+            )
+            for button in row
+        )
+        for row in rows
+    )
+    return (
+        getattr(message, "id", None),
+        get_message_text_content(message),
+        getattr(photo, "file_unique_id", None) if photo else None,
+        buttons,
+    )
+
+
+def _callback_blocks_challenge_progress(callback_text: str) -> bool:
+    return bool(
+        callback_text
+        and _CALLBACK_CHALLENGE_BLOCKED_RE.search(str(callback_text))
+    )
+
+
 @dataclass
 class EventRunResult:
     status: EventRunStatus
@@ -278,6 +316,7 @@ class SignEventRunner:
         }
         self.message_lock = asyncio.Lock()
         self.current_response_index = 0
+        self.last_response_action_message_signature: tuple | None = None
         self.retry_count = 0
         self.retry_suppressed_count = 0
         chat_retries = _optional_int(getattr(chat, "event_retries", None), minimum=0)
@@ -606,6 +645,7 @@ class SignEventRunner:
             self._finish(EventRunStatus.FAILED, f"retry limit exceeded: {reason}")
             return
         self.current_response_index = 0
+        self.last_response_action_message_signature = None
         self._reset_attempt_state()
         self.log(
             f"事件引擎准备重试入口动作: {reason}",
@@ -730,6 +770,10 @@ class SignEventRunner:
             return False
         before_index = self.current_response_index
         action = action if action is not None else self.spec.response_actions[before_index]
+        if message is not None:
+            self.last_response_action_message_signature = (
+                _interaction_content_signature(message)
+            )
         self.current_response_index += 1
         next_action = self._current_response_action()
         self.log(
@@ -1365,6 +1409,23 @@ class SignEventRunner:
                     button_text=button.text,
                     source="ordered_icon",
                 )
+                if _callback_blocks_challenge_progress(
+                    callback_result.callback_text
+                ):
+                    self.clicked_versions.discard(version)
+                    self.log(
+                        f"事件引擎图标点击被验证码弹窗拒绝: {callback_result.callback_text}",
+                        level="WARNING",
+                        stage="result",
+                        event="event_engine_icon_callback_rejected",
+                        meta={
+                            "chat_id": message.chat.id,
+                            "message_id": message.id,
+                            "target": button.text,
+                            "sequence_index": sequence_index,
+                        },
+                    )
+                    return False
                 if not callback_result.confirmed:
                     self.clicked_versions.discard(version)
                     self._log_button_callback_unconfirmed(
@@ -1395,6 +1456,21 @@ class SignEventRunner:
                 },
             )
             return True
+        if (
+            self.last_response_action_message_signature
+            == _interaction_content_signature(message)
+        ):
+            self.log(
+                "事件引擎跳过上一动作已使用且内容未变化的图片菜单",
+                stage="action",
+                event="event_engine_stale_image_menu_skipped",
+                meta={
+                    "chat_id": message.chat.id,
+                    "message_id": message.id,
+                    "current_response_index": self.current_response_index,
+                },
+            )
+            return False
         if not message.photo:
             return False
         image_buffer = await self._download_message_media(message, source="image_option")
@@ -1472,6 +1548,20 @@ class SignEventRunner:
             button_text=button.text,
             source="image_option",
         )
+        if _callback_blocks_challenge_progress(callback_result.callback_text):
+            self.clicked_versions.discard(version)
+            self.log(
+                f"事件引擎图片选项点击被验证码弹窗拒绝: {callback_result.callback_text}",
+                level="WARNING",
+                stage="result",
+                event="event_engine_image_option_callback_rejected",
+                meta={
+                    "chat_id": message.chat.id,
+                    "message_id": message.id,
+                    "button_text": button.text,
+                },
+            )
+            return False
         if not callback_result.confirmed:
             self._log_button_callback_unconfirmed(
                 message=message,
