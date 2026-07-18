@@ -40,6 +40,7 @@ TG-Sign-Plus 是一个基于 Telegram 的自动化任务管理平台，提供 We
 
 - **有序图标验证码**：识别题面明确给出的“从左到右 / 从左往右”或“从右到左 / 从右往左”，按照目标序列逐个匹配并点击真实按钮；方向不明确时不会猜测。
 - **验证码安全处理**：避免把上一条功能菜单重复当成图片题；识别“未完成人机验证、验证码错误、选择失败”等弹窗，防止错误操作被误判为成功。
+- **人工操作节奏**：输入图片验证码、点击图片选项和顺序图标前加入约 0.45–0.75 秒随机停顿，避免瞬间完成整套验证；停顿范围可通过环境变量调整。
 - **图片文字验证码**：清理 OCR 返回内容中的空格、标点、Markdown 和说明文字，只发送图片里的验证码字符。
 - **中文账号名称**：Telegram 账号名称支持中文、英文字母、数字、下划线和连字符，同时保持管理员用户名原有的 ASCII 安全规则。
 - **账号登录可见性**：Session 保存成功后账号立即显示；修复登录清理期间空账号列表被缓存的问题。
@@ -450,6 +451,8 @@ tg-signer list my_account
 | `SIGN_TASK_RUN_TIMEOUT` | 单次签到任务总超时秒数；事件引擎任务会自动按 chat `event_timeout`、chat 数量和间隔抬高到足够覆盖内部事件等待 | `180` |
 | `SIGN_TASK_RUN_TIMEOUT_OVERHEAD` | 事件引擎外层任务超时额外余量秒数，用于覆盖登录、预热、清理和少量调度开销 | `90` |
 | `TG_EVENT_ENGINE_ACTION_TIMEOUT` | 事件引擎单个响应动作超时秒数；用于限制一次按钮回调、下载/OCR、验证码回复等交互卡住的时间 | `45` |
+| `TG_VERIFICATION_ACTION_DELAY_MIN` | 验证码输入、图片选择或图标点击前的最短随机停顿秒数 | `0.45` |
+| `TG_VERIFICATION_ACTION_DELAY_MAX` | 验证码输入、图片选择或图标点击前的最长随机停顿秒数 | `0.75` |
 | `TG_EVENT_ENGINE_AI_FALLBACK` | 未配置的后续交互是否启用 AI 兜底；默认关闭，可在单个 chat 上用 `event_ai_fallback: true` 开启 | `0` |
 | `TG_SIGN_TASK_DISABLE_UPDATES` | 强制关闭后端签到任务的 Telegram 实时 updates（仅低内存排障时使用） | `false` |
 | `MALLOC_ARENA_MAX` | glibc malloc arena 数量（降低可减少内存碎片） | `2` |
@@ -528,6 +531,8 @@ tg-signer list my_account
 | `TG_EVENT_ENGINE_INLINE_RETRIES` | 事件流内部遇到验证码/网络错误时的重试次数 | `3` |
 | `TG_EVENT_ENGINE_RETRY_WAIT` | 事件流内部重试入口命令前等待秒数 | `2` |
 | `TG_EVENT_ENGINE_ACTION_TIMEOUT` | 单个响应动作超时秒数；超时会记录 `event_engine_response_action_timeout` 并触发事件流内部重试 | `45` |
+| `TG_VERIFICATION_ACTION_DELAY_MIN` | 验证码输入、图片选择或图标点击前的最短随机停顿秒数 | `0.45` |
+| `TG_VERIFICATION_ACTION_DELAY_MAX` | 验证码输入、图片选择或图标点击前的最长随机停顿秒数 | `0.75` |
 | `TG_EVENT_ENGINE_HISTORY_LIMIT` | 扫描最近历史消息条数；默认扫描最近 3 条，会在启动入口命令前和运行等待期间低频补漏，适合救援漏掉的验证码/结果消息；设为 `0` 可关闭 | `3` |
 | `TG_EVENT_ENGINE_HISTORY_RESCUE_INTERVAL` | 运行等待期间历史补漏扫描间隔秒数，仅在 `TG_EVENT_ENGINE_HISTORY_LIMIT` 或 chat `event_history_limit` 大于 0 时生效 | `5` |
 | `TG_EVENT_ENGINE_HISTORY_RESULT_MAX_AGE` | 启动前历史扫描允许消费的消息最大年龄秒数，避免把很久以前的结果/验证码消息当作本次结果；设为 `0` 表示不限制 | `600` |

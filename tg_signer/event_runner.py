@@ -397,6 +397,18 @@ class SignEventRunner:
             else int(_read_float_env("TG_CALLBACK_RETRIES", 3, minimum=1))
         )
         self.callback_retries_configured = chat_callback_retries is not None
+        self.verification_delay_min = _read_float_env(
+            "TG_VERIFICATION_ACTION_DELAY_MIN",
+            0.45,
+            minimum=0.0,
+        )
+        self.verification_delay_max = _read_float_env(
+            "TG_VERIFICATION_ACTION_DELAY_MAX",
+            0.75,
+            minimum=0.0,
+        )
+        if self.verification_delay_max < self.verification_delay_min:
+            self.verification_delay_max = self.verification_delay_min
         self.history_rescue_interval = _read_float_env(
             "TG_EVENT_ENGINE_HISTORY_RESCUE_INTERVAL",
             5.0,
@@ -1291,6 +1303,32 @@ class SignEventRunner:
                     return True
         return False
 
+    async def _pause_before_verification_action(
+        self,
+        message: Message,
+        *,
+        source: str,
+        sequence_index: int | None = None,
+    ) -> None:
+        delay = random.uniform(
+            self.verification_delay_min,
+            self.verification_delay_max,
+        )
+        self.log(
+            f"事件引擎模拟人工确认，等待 {delay:.2f} 秒",
+            stage="action",
+            event="event_engine_verification_human_delay",
+            visible=False,
+            meta={
+                "chat_id": message.chat.id,
+                "message_id": message.id,
+                "source": source,
+                "sequence_index": sequence_index,
+                "delay_seconds": round(delay, 3),
+            },
+        )
+        await asyncio.sleep(delay)
+
     async def _choose_option_by_image(self, message: Message) -> bool:
         reply_markup = message.reply_markup
         if not isinstance(reply_markup, InlineKeyboardMarkup):
@@ -1376,6 +1414,15 @@ class SignEventRunner:
                     )
                     return False
                 self.clicked_versions.add(version)
+                try:
+                    await self._pause_before_verification_action(
+                        message,
+                        source="ordered_icon",
+                        sequence_index=sequence_index,
+                    )
+                except asyncio.CancelledError:
+                    self.clicked_versions.discard(version)
+                    raise
                 self.log(
                     f"事件引擎按{direction_label}点击第 {sequence_index} 个图标: {button.text}",
                     stage="action",
@@ -1441,8 +1488,6 @@ class SignEventRunner:
                         callback_result=callback_result,
                     )
                     return False
-                if sequence_index < len(ordered_challenge.targets):
-                    await asyncio.sleep(random.uniform(0.15, 0.35))
             self.log(
                 f"事件引擎已按{direction_label}完成图标序列点击",
                 level="success",
@@ -1522,6 +1567,14 @@ class SignEventRunner:
             )
             return False
         self.clicked_versions.add(version)
+        try:
+            await self._pause_before_verification_action(
+                message,
+                source="image_option",
+            )
+        except asyncio.CancelledError:
+            self.clicked_versions.discard(version)
+            raise
         self.log(
             f"事件引擎选择图片选项: {button.text}",
             stage="action",
@@ -1680,7 +1733,10 @@ class SignEventRunner:
             meta={"chat_id": message.chat.id, "message_id": message.id},
         )
         try:
-            await asyncio.sleep(random.uniform(1.5, 3.5))
+            await self._pause_before_verification_action(
+                message,
+                source="captcha_text",
+            )
         except asyncio.CancelledError:
             self.sent_captcha_versions.discard(version)
             raise
