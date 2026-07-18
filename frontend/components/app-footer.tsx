@@ -7,7 +7,7 @@ export function AppFooter() {
         <span>© 2026 TG Sign Plus</span>
         <span>|</span>
         <Link
-          href="https://github.com/linlvyy/tg-sign-plus999"
+          href="https://github.com/linlvyy/tg-sign-plus"
           target="_blank"
           rel="noreferrer"
           className="transition-colors hover:text-[var(--text-primary)]"

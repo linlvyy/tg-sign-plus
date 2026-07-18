@@ -32,7 +32,7 @@ TG-Sign-Plus 是一个基于 Telegram 的自动化任务管理平台，提供 We
 | 上游提交 | `Reduce sign task log noise` |
 | 上游提交日期 | 2026-06-25（Asia/Shanghai） |
 | 建立派生版本日期 | 2026-07-18（Asia/Shanghai） |
-| 独立维护仓库 | [linlvyy/tg-sign-plus999](https://github.com/linlvyy/tg-sign-plus999) |
+| 独立维护仓库 | [linlvyy/tg-sign-plus](https://github.com/linlvyy/tg-sign-plus) |
 
 本仓库从上述提交开始独立维护，不保留指向上游的 Git remote，也不会自动同步或用上游更新覆盖本项目改动。上游项目与本项目后续版本、功能和支持范围彼此独立。
 
@@ -45,7 +45,7 @@ TG-Sign-Plus 是一个基于 Telegram 的自动化任务管理平台，提供 We
 - **中文账号名称**：Telegram 账号名称支持中文、英文字母、数字、下划线和连字符，同时保持管理员用户名原有的 ASCII 安全规则。
 - **账号登录可见性**：Session 保存成功后账号立即显示；修复登录清理期间空账号列表被缓存的问题。
 - **登录流程稳定性**：首次聊天列表刷新改为后台任务并设置超时，不再阻塞登录完成或导致主界面长期空白。
-- **独立项目标识**：仓库链接、页面页脚、项目元数据和发布工作流改为指向 `linlvyy/tg-sign-plus999`，避免依赖上游发布地址。
+- **独立项目标识**：仓库链接、页面页脚、项目元数据和发布工作流改为指向 `linlvyy/tg-sign-plus`，避免依赖上游发布地址。
 - **回归测试**：增加有序图标方向、OCR 文本清理、失败弹窗、菜单去重、中文账号名和登录可见性测试。
 
 ### 核心能力
@@ -133,8 +133,8 @@ TG-Sign-Plus 是一个基于 Telegram 的自动化任务管理平台，提供 We
 #### 1. 克隆项目
 
 ```bash
-git clone https://github.com/linlvyy/tg-sign-plus999.git
-cd tg-sign-plus999
+git clone https://github.com/linlvyy/tg-sign-plus.git
+cd tg-sign-plus
 ```
 
 #### 2. 安装后端依赖
@@ -234,8 +234,8 @@ docker run -d \
 
 ```bash
 # 克隆项目
-git clone https://github.com/linlvyy/tg-sign-plus999.git
-cd tg-sign-plus999
+git clone https://github.com/linlvyy/tg-sign-plus.git
+cd tg-sign-plus
 
 # 构建镜像
 docker build -t tg-sign-plus:custom .
